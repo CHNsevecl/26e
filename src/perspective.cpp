@@ -247,6 +247,8 @@ void task(const cv::Mat& warped){
                 }
 
             }
+
+            cv::imwrite("wrapped_line.png", wrapped_line);
         }
     }
 
@@ -325,7 +327,5 @@ void second_piece(cv::Mat& wrapped_line, line_data* line1, line_data* line2, rec
     line1->turn_angle = angle1;
     line2->turn_angle = angle1;
 
-    
-    std::cout << "Line1 length: " << line1->length << std::endl;
     std::cout << "turn angle: " << angle1 << std::endl;
 }
