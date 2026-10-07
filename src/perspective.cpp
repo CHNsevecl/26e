@@ -219,8 +219,8 @@ void task(const cv::Mat& warped){
     }
 
     //第二块拼图
-    if(!index_copy.empty()){
-        for(size_t count = 0; count < index_copy.size(); count++){
+    if(!index.empty()){
+        for(size_t count = 0; count < index.size(); count++){
             line_data* line1 = &lines[index[count].first][index[count].second];
             line_data* line2 = nullptr;
             if(index[count].second != 0){
@@ -230,7 +230,7 @@ void task(const cv::Mat& warped){
                 line2 = &lines[index[count].first][lines[index[count].first].size()-1];
             }
 
-            if(std::abs(line1->length - 60*scale) <  10.0f){
+            if(std::abs(line1->length - 60*scale) <  20.0f){
                 cv::line(wrapped_line, line1->start_point, line1->end_point, cv::Scalar(0, 255, 0), 2);
                 std::cout << "Line1 length: " << line1->length << std::endl;
                 if(rect.left != 60*scale){
@@ -238,7 +238,7 @@ void task(const cv::Mat& warped){
                     index_copy.erase(index_copy.begin() + count);
                 }
             }
-            else if(std::abs(line2->length - 60*scale) <  10.0f){
+            else if(std::abs(line2->length - 60*scale) <  20.0f){
                 cv::line(wrapped_line, line2->start_point, line2->end_point, cv::Scalar(0, 255, 0), 2);
                 std::cout << "Line2 length: " << line2->length << std::endl;
                 if(rect.left != 60*scale){
