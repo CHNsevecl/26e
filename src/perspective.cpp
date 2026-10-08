@@ -119,7 +119,7 @@ void task(const cv::Mat& warped){
             cv::Point p2 = approx[(j + 1) % approx.size()];
             double length = cv::norm(p2 - p1);
             double angle = std::atan2(p2.y - p1.y, p2.x - p1.x) * 180 / CV_PI;
-            line_data ld{length, 0.0, 0.0, p2 - p1, p2 ,p1, std::make_pair(-1, -1)};
+            line_data ld{length, 0.0, 0.0, p2 - p1, p2 ,p1, std::make_pair(-1, -1),false};
             lines[i].push_back(ld);
             
             cv::line(lineImg, p1, p2, cv::Scalar(255), 1);
@@ -136,16 +136,21 @@ void task(const cv::Mat& warped){
     int aindex = 0;
     for(size_t i = 0; i < lines.size(); i++) {
         for(size_t j = 0; j < lines[i].size(); j++) {
+            line_data* line2 = nullptr;
             cv::Point p1 = lines[i][j].line_vector;
             cv::Point p2;
             if(j != 0) {
-                p2 = lines[i][j-1].line_vector;
+                line2 = &lines[i][j-1];
+                p2 = line2->line_vector;
             }
             else {
-                p2 = lines[i][lines[i].size()-1].line_vector;
+                line2 = &lines[i][lines[i].size()-1];
+                p2 = line2->line_vector;
             }
             double theta = std::acosf((p1.x * p2.x + p1.y * p2.y) / (std::sqrt(p1.x * p1.x + p1.y * p1.y) * std::sqrt(p2.x * p2.x + p2.y * p2.y))) * 180 / CV_PI;
             lines[i][j].angle = theta;
+            lines[i][j].leg_right_angle = true;
+            line2->leg_right_angle = true;
             if(std::abs(theta - 90.0) < 5.0f){
                 index.push_back(std::make_pair(i, j));
                 angle_index[aindex] = theta;
@@ -159,6 +164,7 @@ void task(const cv::Mat& warped){
     cv::rectangle(wrapped_line, cv::Point(200, 100), cv::Point(200+100*scale, 100+60*scale), cv::Scalar(255, 255, 255), 2);
     rect_length rect = {100*scale, 100*scale, 60*scale, 60*scale};
 
+    //找等长临边
     for (size_t i = 0; i < lines.size(); i++) {
         for(size_t j = 0; j < lines[i].size(); j++) {
             bool continue_flag = false;
@@ -186,6 +192,8 @@ void task(const cv::Mat& warped){
             }   
         }
     }
+
+
 
 
     //第一块拼图

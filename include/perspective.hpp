@@ -15,6 +15,7 @@ struct line_data{
     cv::Point start_point;
     cv::Point end_point;
     std::pair<double, double> near_line;
+    bool leg_right_angle;
 };
 
 struct rect_length{
