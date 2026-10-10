@@ -203,7 +203,7 @@ void task(const cv::Mat& warped){
             pieces.pieces_lines[i][j].angle = theta;
             
             
-            if(std::abs(theta - 90.0) < 2.0f){
+            if(std::abs(theta - 90.0) < 3.0f){
                 cv::line(warped, pieces.pieces_lines[i][j].start_point, pieces.pieces_lines[i][j].end_point, cv::Scalar(0,255,0), 3);
                 cv::line(warped, line2->start_point, line2->end_point, cv::Scalar(0,255 ,0), 3);
                 cv::imwrite("a4_warped.png", warped);
@@ -237,7 +237,7 @@ void task(const cv::Mat& warped){
                             pieces.pieces_lines[i][n].turn_angle = line1->turn_angle;
                         }
                     }
-                    Translate(pieces, cv::Point2f(640, 200) + (line1->start_point - pieces.center_gravity[i]), pieces.pieces_lines[i][j].turn_angle, i);
+                    Translate(pieces, cv::Point2f(640, 200) ,line1->start_point, pieces.pieces_lines[i][j].turn_angle, i);
                     std::cout << "line1->start_point" << std::endl;
                 }
                 else{
@@ -248,7 +248,7 @@ void task(const cv::Mat& warped){
                             pieces.pieces_lines[i][n].turn_angle = line1->turn_angle;
                         }
                     }
-                    Translate(pieces, cv::Point2f(640, 200) + (line1->end_point - pieces.center_gravity[i]), pieces.pieces_lines[i][j].turn_angle, i);
+                    Translate(pieces, cv::Point2f(640, 200) , line1->end_point, pieces.pieces_lines[i][j].turn_angle, i);
                     std::cout << "line1->end_point" << std::endl;
                 }
                 
@@ -276,16 +276,38 @@ void task(const cv::Mat& warped){
 }
 
 
-void Translate(piece_data& pieces, cv::Point2f target_point, double theta, int index) {
+void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tight_point, double theta, int index) {
     cv::Point2f origin_g_point = pieces.center_gravity[index];
-    pieces.center_gravity[index] = target_point;
+    
     theta = -theta * CV_PI / 180.0; // Convert degrees to radians
+    size_t ind = 0;
+    for(size_t j = 0; j < pieces.gra_p_vector[index].size(); j++) {
+        if(std::abs(pieces.pieces_point[index][j].x - leg_tight_point.x) < 1.0f && std::abs(pieces.pieces_point[index][j].y - leg_tight_point.y) < 1.0f) {
+            ind = j;
+            std::cout << "Found leg tight point at index: " << ind << std::endl;
+            break;
+        } 
+    }
+
     for(size_t j = 0; j < pieces.pieces_point[index].size(); j++) {
-        
-        pieces.pieces_point[index][j].x = pieces.center_gravity[index].x + pieces.gra_p_vector[index][j].x * std::cos(theta) + pieces.gra_p_vector[index][j].y * std::sin(theta);
-        pieces.pieces_point[index][j].y = pieces.center_gravity[index].y - pieces.gra_p_vector[index][j].x * std::sin(theta) + pieces.gra_p_vector[index][j].y * std::cos(theta);
-        
-        
+        cv::Point2f temp_vector;
+        temp_vector.x = pieces.gra_p_vector[index][j].x * std::cos(theta) + pieces.gra_p_vector[index][j].y * std::sin(theta);
+        temp_vector.y = - pieces.gra_p_vector[index][j].x * std::sin(theta) + pieces.gra_p_vector[index][j].y * std::cos(theta);
+        pieces.gra_p_vector[index][j] = temp_vector;
+    }
+
+    std::cout << "After rotation, gra_p_vector[" << index << "][" << ind << "] = (" 
+              << pieces.gra_p_vector[index][ind].x << ", " 
+              << pieces.gra_p_vector[index][ind].y << ")" << std::endl;
+
+    pieces.center_gravity[index].x = target_point.x - pieces.gra_p_vector[index][ind].x;
+    pieces.center_gravity[index].y = target_point.y - pieces.gra_p_vector[index][ind].y;
+
+    for(size_t j = 0; j < pieces.pieces_point[index].size(); j++) {
+        cv::Point2f temp_vector;
+        temp_vector.x = pieces.center_gravity[index].x + pieces.gra_p_vector[index][j].x;
+        temp_vector.y = pieces.center_gravity[index].y + pieces.gra_p_vector[index][j].y;
+        pieces.pieces_point[index][j] = temp_vector;
     }
     
 }

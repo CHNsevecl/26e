@@ -37,5 +37,5 @@ struct rect_length{
 std::vector<cv::Point2f> orderPoints(std::vector<cv::Point2f> pts);
 cv::Mat a4_perspective_transform(const cv::Mat& img);
 void task(const cv::Mat& warped);
-void Translate(piece_data& pieces, cv::Point2f target_point, double theta, int index); //拼图旋转和位移
+void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tight_point,double theta, int index); //拼图旋转和位移
 void turn_angle(line_data* line,int index);
