@@ -96,9 +96,11 @@ void task(const cv::Mat& warped){
     pieces.pieces_lines = lines;
     pieces.turn_angle.resize(pieces.pieces_point.size(), 0.0);
     pieces.pieces_lines_right_point.resize(pieces.pieces_point.size());
+
     for(size_t i = 0; i < pieces.pieces_lines_right_point.size(); i++) {
         pieces.pieces_lines_right_point[i].resize(pieces.pieces_lines[i].size(), false);
     }
+
     piece_data pieces_original = pieces; // 保存原始数据
     //计算重心
     gravity_calculation(pieces, lineImg);
@@ -138,95 +140,27 @@ void task(const cv::Mat& warped){
     
     //余下的边长
     rect_length remain_length = rects_length;
-
-    // //寻找最长直角边，旋转到水平位置
-    // for(size_t i = 0; i < pieces.pieces_lines.size(); i++) {
-    //     for (size_t j = 0; j < pieces.pieces_lines[i].size(); j++) {
-    //         line_data* line1 = &pieces.pieces_lines[i][j];
-    //         line_data* line2 = nullptr;
-    //         if(j != 0) {
-    //             line2 = &pieces.pieces_lines[i][j-1];
-    //         }
-    //         else {
-    //             line2 = &pieces.pieces_lines[i][pieces.pieces_lines[i].size()-1];
-    //         }
-    //         if(pieces.pieces_lines_right_angle[i][j] && std::abs(line1->length - 100*scale) < 10.0f){ 
-    //             if(line1->start_point == line2->end_point || line1->start_point == line2->start_point){
-    //                 circle(lineImg, line1->start_point, 5, cv::Scalar(255), -1);
-    //                 pieces.turn_angle[i] = turn_angle(line1, 1);
-    //                 Translate(pieces, cv::Point2f(640, 200) ,line1->start_point, pieces.turn_angle[i], i);
-    //             }
-    //             else{
-    //                 pieces.turn_angle[i] = turn_angle(line1, 2);
-    //                 circle(lineImg, line1->end_point, 5, cv::Scalar(255), -1);
-    //                 Translate(pieces, cv::Point2f(640, 200) , line1->end_point, pieces.turn_angle[i], i);
-    //             }
-    //             for (size_t k = 0; k < pieces.pieces_point[i].size(); k++) {
-    //                 cv::circle(lineImg, pieces.pieces_point[i][k], 2, cv::Scalar(255), -1);
-    //                 cv::line(lineImg, pieces.pieces_point[i][k], pieces.pieces_point[i][(k+1) % pieces.pieces_point[i].size()], cv::Scalar(255), 1);
-    //                 cv::imwrite("lines.png", lineImg);
-    //             }
-    //             break;
-    //         }
-    //     }
-    // }
     
-
-
-
     //计算拼图
     double max_right_contour = 0.0;
     size_t max_right_contour_index = 0;
-    for(size_t i = 0; i < pieces.pieces_point.size(); i++) {
-        bool right_angle = false;
-        for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
-            if(pieces.pieces_lines_right_point[i][j]) {
-                right_angle = true;
-                break;
-            }
-        }
-        if(right_angle){
-            double area = polygonArea(pieces.pieces_point[i]);
-            if(area > max_right_contour){
-                max_right_contour = area;   
-                max_right_contour_index = i;
-            }
-        }
-    }
-    
-
+    Traverse_Area(pieces, max_right_contour, max_right_contour_index);
     
     for(size_t k = 0; k < pieces.pieces_point[max_right_contour_index].size(); k++) {
         if( pieces.pieces_lines_right_point[max_right_contour_index][k] == false) {continue;}
         double max_right_length = 0.0;
-        // if(pieces.pieces_lines[max_right_contour_index][k].line_right_angle && pieces.pieces_lines[max_right_contour_index][k].length > max_right_length){ 
-        //     max_right_length = pieces.pieces_lines[max_right_contour_index][k].length;
-        //     if(pieces.pieces_lines[max_right_contour_index][pieces.pieces_lines[max_right_contour_index][k].last_line_index].line_right_angle && pieces.pieces_lines[max_right_contour_index][k].length > max_right_length){
-        //         max_right_length = pieces.pieces_lines[max_right_contour_index][(k+1) % pieces.pieces_lines[max_right_contour_index].size()].length;
-        //     }
-        // }
 
-        if(std::abs(pieces.pieces_lines[max_right_contour_index][k].length - 60*scale) < 10.0f){
-            pieces.turn_angle[max_right_contour_index] = turn_angle(&pieces.pieces_lines[max_right_contour_index][pieces.pieces_lines[max_right_contour_index][k].last_line_index], 1);
-            std::cout << "length: " << pieces.pieces_lines[max_right_contour_index][k].length << std::endl;
-        }
-        if(std::abs(pieces.pieces_lines[max_right_contour_index][pieces.pieces_lines[max_right_contour_index][k].last_line_index].length - 60*scale) < 10.0f){
-            pieces.turn_angle[max_right_contour_index] = turn_angle(&pieces.pieces_lines[max_right_contour_index][k], 1);
-            std::cout << "theta: " << pieces.turn_angle[max_right_contour_index] << std::endl;
-            std::cout << "length: " << pieces.pieces_lines[max_right_contour_index][pieces.pieces_lines[max_right_contour_index][k].last_line_index].length << std::endl;
+        //明日工作：将检测60、100的边长改为函数
+        //思路：遍历所有变，有可以和边长匹配的边，放置，若无，说明该边长不匹配，旋转后再放置
+        if(!l60_detect(pieces, max_right_contour_index, k)){
+            l100_detect(pieces, max_right_contour_index, k);
         }
 
         cv::Point start_point = put_position(pieces, final_position, rects_length, max_right_contour_index, k);
         Translate(pieces, start_point, pieces.pieces_point[max_right_contour_index][k], pieces.turn_angle[max_right_contour_index], max_right_contour_index);
         std::cout << rects_length.left_length << " " << rects_length.down_length << std::endl;
-        
-        // std::cout << "max_right_length: " << max_right_length << std::endl;
     }
-
-
-
-
-
+    
 
     for(size_t i = 0; i < pieces.pieces_point.size(); i++) {
         for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
@@ -235,6 +169,35 @@ void task(const cv::Mat& warped){
             cv::imwrite("lines.png", lineImg);
         }
     }
+    
+    size_t next_contour_index = 0;
+    size_t next_line_index = 0;
+    if(remain_length.left_length != rects_length.left_length && rects_length.left_length != 0.0f){
+        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
+            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+                if(std::abs(rects_length.left_length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                    cv::line(warped, pieces.pieces_lines[i][j].start_point, pieces.pieces_lines[i][j].end_point, cv::Scalar(0, 0, 255), 3);
+                    cv::imwrite("a4_warped.png", warped);
+                }
+            }
+        }
+
+    }
+    if(remain_length.down_length != rects_length.down_length && rects_length.down_length != 0.0f){
+        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
+            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+                if(pieces.pieces_lines[i][j].line_right_angle == true){    
+                    if(std::abs(rects_length.down_length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                        cv::line(warped, pieces.pieces_lines[i][j].start_point, pieces.pieces_lines[i][j].end_point, cv::Scalar(0, 0, 255), 3);
+                        cv::imwrite("a4_warped.png", warped);
+                    }
+                }
+            }
+        }
+
+    }
+
+
 
     cv::imwrite("lines.png", lineImg);
     cv::imwrite("gray.png", gray);
@@ -548,5 +511,60 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
     
 
     return start_point;
+}
+
+bool l60_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ){
+    if(std::abs(pieces.pieces_lines[contour_index][line_index].length - 60*scale) < 10.0f){
+        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index], 1);
+        return true;
+    }
+    if(std::abs(pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length - 60*scale) < 10.0f){
+        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][line_index], 1);
+        return true;
+    }
+    return false;
+}
+
+bool l100_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ){
+    if(std::abs(pieces.pieces_lines[contour_index][line_index].length - 100*scale) < 10.0f){
+        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][line_index], 1);
+        // std::cout << "length: " << pieces.pieces_lines[contour_index][line_index].length << std::endl;
+        return true;
+    }
+    if(std::abs(pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length - 100*scale) < 10.0f){
+        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index], 1);
+        // std::cout << "theta: " << pieces.turn_angle[contour_index] << std::endl;
+        // std::cout << "length: " << pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length << std::endl;
+        return true;
+    }
+    return false;
+}
+
+bool Traverse_Area(piece_data& pieces, double& max_right_contour, size_t& max_right_contour_index){
+    bool right_angle = false;
+    for(size_t i = 0; i < pieces.pieces_point.size(); i++) {
+        for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+            if(pieces.pieces_lines_right_point[i][j]) {
+                right_angle = true;
+                break;
+            }
+        }
+        if(right_angle){
+            double area = polygonArea(pieces.pieces_point[i]);
+            if(area > max_right_contour){
+                max_right_contour = area;   
+                max_right_contour_index = i;
+            }
+            continue;
+        }
+        right_angle = false;
+    }
+    max_right_contour = 0.0; 
+    if(right_angle){
+        return true;
+    }
+    else{
+        return false;
+    }
 }
 

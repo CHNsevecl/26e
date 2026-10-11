@@ -36,7 +36,6 @@ struct rect_length{
     double down_length;
     double left_length;
     double right_length;
-
 };
 
 struct rect_position{
@@ -47,12 +46,20 @@ struct rect_position{
 };
 
 std::vector<cv::Point2f> orderPoints(std::vector<cv::Point2f> pts);
-cv::Mat a4_perspective_transform(const cv::Mat& img);
+
 void task(const cv::Mat& warped);
-void gravity_calculation(piece_data& pieces, cv::Mat& lineImg); //计算重心
-double polygonArea(const std::vector<cv::Point2f>& pts); //计算面积
+cv::Mat a4_perspective_transform(const cv::Mat& img);
+
+//图形变换
 void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tight_point,double theta, int index); //拼图旋转和位移
+double turn_angle(line_data* line,int index);
 void leg_right_judgment(piece_data& pieces,const cv::Mat& warped, std::vector<std::pair<double, double>>& index, double* angle_index, int& aindex) ; //判断直角边
 piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, cv::Mat& edged, cv::Mat& binary ,cv::Mat& lineImg, std::vector<std::vector<struct line_data>>& lines); //提取拼图轮廓信息
-double turn_angle(line_data* line,int index);
 cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, rect_length& rects_length, int max_right_contour_index, int k_index);//直角合适位置
+
+//数据计算
+void gravity_calculation(piece_data& pieces, cv::Mat& lineImg); //计算重心
+bool Traverse_Area(piece_data& pieces, double& max_right_contour, size_t& max_right_contour_index); //遍历面积
+double polygonArea(const std::vector<cv::Point2f>& pts); //计算面积
+bool l60_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ); //长度60检测 
+bool l100_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ); //长度100检测 
