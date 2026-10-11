@@ -11,8 +11,8 @@ struct line_data{
     double length;
     double angle;
     cv::Point2f line_vector;
-    cv::Point2f start_point;
-    cv::Point2f end_point;
+    size_t start_point;
+    size_t end_point;
     std::pair<double, double> near_line;
     bool line_right_angle;
     size_t last_line_index;
@@ -52,7 +52,7 @@ cv::Mat a4_perspective_transform(const cv::Mat& img);
 
 //图形变换
 void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tight_point,double theta, int index); //拼图旋转和位移
-double turn_angle(line_data* line,int index);
+double turn_angle(piece_data& pieces, line_data* line, size_t contour_index);
 void leg_right_judgment(piece_data& pieces,const cv::Mat& warped, std::vector<std::pair<double, double>>& index, double* angle_index, int& aindex) ; //判断直角边
 piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, cv::Mat& edged, cv::Mat& binary ,cv::Mat& lineImg, std::vector<std::vector<struct line_data>>& lines); //提取拼图轮廓信息
 cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, rect_length& rects_length, int max_right_contour_index, int k_index);//直角合适位置

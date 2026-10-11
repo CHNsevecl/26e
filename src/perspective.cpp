@@ -2,6 +2,8 @@
 
 using namespace cv;
 using namespace std;
+cv::Point2f all_1;
+cv::Point2f all_2;
 
 // 对四个角点排序：左上、右上、右下、左下
 vector<Point2f> orderPoints(vector<Point2f> pts) {
@@ -157,8 +159,9 @@ void task(const cv::Mat& warped){
         }
 
         cv::Point start_point = put_position(pieces, final_position, rects_length, max_right_contour_index, k);
+   
         Translate(pieces, start_point, pieces.pieces_point[max_right_contour_index][k], pieces.turn_angle[max_right_contour_index], max_right_contour_index);
-        std::cout << rects_length.left_length << " " << rects_length.down_length << std::endl;
+    
     }
     
 
@@ -176,7 +179,7 @@ void task(const cv::Mat& warped){
         for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
             for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
                 if(std::abs(rects_length.left_length - pieces.pieces_lines[i][j].length) < 5.0f) {
-                    cv::line(warped, pieces.pieces_lines[i][j].start_point, pieces.pieces_lines[i][j].end_point, cv::Scalar(0, 0, 255), 3);
+                    cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
                     cv::imwrite("a4_warped.png", warped);
                 }
             }
@@ -188,7 +191,7 @@ void task(const cv::Mat& warped){
             for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
                 if(pieces.pieces_lines[i][j].line_right_angle == true){    
                     if(std::abs(rects_length.down_length - pieces.pieces_lines[i][j].length) < 5.0f) {
-                        cv::line(warped, pieces.pieces_lines[i][j].start_point, pieces.pieces_lines[i][j].end_point, cv::Scalar(0, 0, 255), 3);
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
                         cv::imwrite("a4_warped.png", warped);
                     }
                 }
@@ -198,24 +201,23 @@ void task(const cv::Mat& warped){
     }
 
 
-
+    cv::circle(lineImg, all_1, 5, cv::Scalar(255), -1);
+    cv::circle(lineImg, all_2, 5, cv::Scalar(255), -1);
     cv::imwrite("lines.png", lineImg);
     cv::imwrite("gray.png", gray);
     cv::imwrite("edged.png", edged);
     cv::imwrite("binary.png", binary);
-    // cv::imwrite("wrapped_line.png", wrapped_line);
 }
 
 
 void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tight_point, double theta, int index){
     cv::Point2f origin_g_point = pieces.center_gravity[index];
     
-    theta = -theta * CV_PI / 180.0; // Convert degrees to radians
+    theta = theta * CV_PI / 180.0; // Convert degrees to radians
     size_t ind = 0;
     for(size_t j = 0; j < pieces.gra_p_vector[index].size(); j++) {
         if(std::abs(pieces.pieces_point[index][j].x - leg_tight_point.x) < 1.0f && std::abs(pieces.pieces_point[index][j].y - leg_tight_point.y) < 1.0f) {
             ind = j;
-            std::cout << "Found leg tight point at index: " << ind << std::endl;
             break;
         } 
     }
@@ -227,9 +229,6 @@ void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tigh
         pieces.gra_p_vector[index][j] = temp_vector;
     }
 
-    std::cout << "After rotation, gra_p_vector[" << index << "][" << ind << "] = (" 
-              << pieces.gra_p_vector[index][ind].x << ", " 
-              << pieces.gra_p_vector[index][ind].y << ")" << std::endl;
 
     pieces.center_gravity[index].x = target_point.x - pieces.gra_p_vector[index][ind].x;
     pieces.center_gravity[index].y = target_point.y - pieces.gra_p_vector[index][ind].y;
@@ -241,29 +240,6 @@ void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tigh
         pieces.pieces_point[index][j] = temp_vector;
     }
     
-}
-
-double turn_angle(line_data* line, int index) {
-    cv::Point2f vector_x = cv::Point2f(1, 0);
-    cv::Point2f vector_line;
-    if(index == 1){
-        vector_line = line->end_point - line->start_point;
-    }
-    else{
-        
-        vector_line = line->start_point - line->end_point;
-    }
-    
-    std::cout << "vector_line: (" << vector_line.x << ", " << vector_line.y << ")" << std::endl;
-    double theta = std::acosf((vector_x.x * vector_line.x + vector_x.y * vector_line.y)/(std::sqrt(vector_x.x * vector_x.x + vector_x.y * vector_x.y) * std::sqrt(vector_line.x * vector_line.x + vector_line.y * vector_line.y))) * 180 / CV_PI;
-    if(vector_line.y < 0){
-        theta = theta - 180.0;
-    }
-    else{
-        theta = 180.0 - theta;
-    }
-
-    return theta;
 }
 
 piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, cv::Mat& edged, cv::Mat& binary ,cv::Mat& lineImg, std::vector<std::vector<struct line_data>>& lines){
@@ -300,7 +276,7 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
             cv::Point2f p2 = approx[(j + 1) % approx.size()];
             double length = cv::norm(p2 - p1);
             double angle = std::atan2(p2.y - p1.y, p2.x - p1.x) * 180 / CV_PI;
-            line_data ld{length, 0.0, p2 - p1, p2 ,p1, std::make_pair(-1, -1), false,0};
+            line_data ld{length, 0.0, p2 - p1, (j + 1) % approx.size() ,j, std::make_pair(-1, -1), false,0};
             lines[i].push_back(ld);
             pieces.pieces_point[i].push_back(p1);
             cv::line(lineImg, p1, p2, cv::Scalar(255), 1);
@@ -371,12 +347,12 @@ void leg_right_judgment(piece_data& pieces,const cv::Mat& warped, std::vector<st
             
             
             if(std::abs(theta - 90.0) < 3.0f){
-                cv::line(warped, pieces.pieces_lines[i][j].start_point, pieces.pieces_lines[i][j].end_point, cv::Scalar(0,255,0), 3);
-                cv::line(warped, line2->start_point, line2->end_point, cv::Scalar(0,255 ,0), 3);
+                cv::line(warped, pieces.pieces_point[i][j], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0,255,0), 3);
+                cv::line(warped, pieces.pieces_point[i][line2->start_point], pieces.pieces_point[i][line2->end_point], cv::Scalar(0,255 ,0), 3);
                 cv::imwrite("a4_warped.png", warped);
                 if(pieces.pieces_lines[i][j].start_point == line2->end_point || pieces.pieces_lines[i][j].start_point == line2->start_point){
                     for(size_t k = 0; k < pieces.pieces_point[i].size(); k++) {
-                        if(pieces.pieces_point[i][k] == pieces.pieces_lines[i][j].start_point){
+                        if(pieces.pieces_point[i][k] == pieces.pieces_point[i][j]){
                             pieces.pieces_lines_right_point[i][j] = true;
                             break;
                         }
@@ -384,7 +360,7 @@ void leg_right_judgment(piece_data& pieces,const cv::Mat& warped, std::vector<st
                 }
                 else{
                     for(size_t k = 0; k < pieces.pieces_point[i].size(); k++) {
-                        if(pieces.pieces_point[i][k] == pieces.pieces_lines[i][j].end_point){
+                        if(pieces.pieces_point[i][k] == pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point]){
                             pieces.pieces_lines_right_point[i][j] = true;
                             break;
                         }
@@ -413,13 +389,13 @@ double polygonArea(const std::vector<cv::Point2f>& pts){ //计算面积
 }
 
 cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, rect_length& rects_length, int max_right_contour_index, int k_index){
+    std::cout << "theta_put: " << pieces_temp.turn_angle[max_right_contour_index] << std::endl;
     Translate(pieces_temp, cv::Point2f(600, 600) , pieces_temp.pieces_point[max_right_contour_index][k_index], pieces_temp.turn_angle[max_right_contour_index], max_right_contour_index);
         
 
     cv::Point2f vector1 = -pieces_temp.pieces_point[max_right_contour_index][k_index] + pieces_temp.pieces_point[max_right_contour_index][(k_index+1) % pieces_temp.pieces_point[max_right_contour_index].size()];
     cv::Point2f vector2 = -pieces_temp.pieces_point[max_right_contour_index][k_index] + pieces_temp.pieces_point[max_right_contour_index][pieces_temp.pieces_lines[max_right_contour_index][k_index].last_line_index];
-    std::cout << "vector1: (" << vector1.x << ", " << vector1.y << ")" << std::endl;
-    std::cout << "vector2: (" << vector2.x << ", " << vector2.y << ")" << std::endl;
+
 
     cv::Point2f start_point;
     //存在直角边时
@@ -446,6 +422,7 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
         }
     }
     else if((std::abs(vector1.x) < 3.0f && vector1.y < 0.0f && std::abs(vector2.y) < 3.0f && vector2.x < 0.0f) || (std::abs(vector2.x) < 3.0f && vector2.y < 0.0f && std::abs(vector1.y) < 3.0f && vector1.x < 0.0f)){
+        start_point = final_position.down_right;
         if(std::abs(vector1.y) < 3.0f && vector1.x < 0.0f && std::abs(vector2.x) < 3.0f && vector2.y < 0.0f){
             rects_length.right.second.y -= std::abs(vector2.y);
             rects_length.down.second.x -= std::abs(vector1.x);
@@ -467,6 +444,7 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
         }
     }
     else if((std::abs(vector1.x) < 3.0f && vector1.y > 0.0f && std::abs(vector2.y) < 3.0f && vector2.x < 0.0f) || (std::abs(vector2.x) < 3.0f && vector2.y > 0.0f && std::abs(vector1.y) < 3.0f && vector1.x < 0.0f)){
+        start_point = final_position.upper_right;
         if(std::abs(vector1.y) < 3.0f && vector1.x < 0.0f && std::abs(vector2.x) < 3.0f && vector2.y > 0.0f){
             rects_length.right.first.y += std::abs(vector2.y);
             rects_length.up.second.x -= std::abs(vector1.x);
@@ -488,6 +466,7 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
         }
     }
     else if((std::abs(vector1.x) < 3.0f && vector1.y > 0.0f && std::abs(vector2.y) < 3.0f && vector2.x > 0.0f) || (std::abs(vector2.x) < 3.0f && vector2.y > 0.0f && std::abs(vector1.y) < 3.0f && vector1.x > 0.0f)){
+        start_point = final_position.upper_left;
         if(std::abs(vector1.y) < 3.0f && vector1.x > 0.0f && std::abs(vector2.x) < 3.0f && vector2.y > 0.0f){
             rects_length.left.first.y += std::abs(vector2.y);
             rects_length.up.first.x += std::abs(vector1.x);
@@ -514,27 +493,29 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
 }
 
 bool l60_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ){
-    if(std::abs(pieces.pieces_lines[contour_index][line_index].length - 60*scale) < 10.0f){
-        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index], 1);
+    if(std::abs(pieces.pieces_lines[contour_index][line_index].length - 60*scale) < 10.0f && pieces.pieces_lines[contour_index][line_index].line_right_angle == true){
+        pieces.turn_angle[contour_index] = turn_angle(pieces, &pieces.pieces_lines[contour_index][line_index], contour_index);
         return true;
     }
-    if(std::abs(pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length - 60*scale) < 10.0f){
-        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][line_index], 1);
+    if(std::abs(pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length - 60*scale) < 10.0f && pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].line_right_angle == true){
+        
+        pieces.turn_angle[contour_index] = turn_angle(pieces, &pieces.pieces_lines[contour_index][line_index], contour_index);
         return true;
     }
     return false;
 }
 
+//需要修改
 bool l100_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ){
     if(std::abs(pieces.pieces_lines[contour_index][line_index].length - 100*scale) < 10.0f){
-        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][line_index], 1);
-        // std::cout << "length: " << pieces.pieces_lines[contour_index][line_index].length << std::endl;
+        pieces.turn_angle[contour_index] = turn_angle(pieces, &pieces.pieces_lines[contour_index][line_index], contour_index);
+        std::cout << "length: " << pieces.pieces_lines[contour_index][line_index].length << std::endl;
         return true;
     }
     if(std::abs(pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length - 100*scale) < 10.0f){
-        pieces.turn_angle[contour_index] = turn_angle(&pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index], 1);
+        pieces.turn_angle[contour_index] = turn_angle(pieces, &pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index], contour_index);
         // std::cout << "theta: " << pieces.turn_angle[contour_index] << std::endl;
-        // std::cout << "length: " << pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length << std::endl;
+        std::cout << "length: " << pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length << std::endl;
         return true;
     }
     return false;
@@ -568,3 +549,28 @@ bool Traverse_Area(piece_data& pieces, double& max_right_contour, size_t& max_ri
     }
 }
 
+double turn_angle(piece_data& pieces, line_data* line, size_t contour_index) {
+    cv::Point2f vector_x = cv::Point2f(1, 0);
+    cv::Point2f vector_line;
+    if(pieces.pieces_lines_right_point[contour_index][line->start_point] == true){
+        vector_line = pieces.pieces_point[contour_index][line->end_point] - pieces.pieces_point[contour_index][line->start_point];
+    }
+    else{
+        vector_line = pieces.pieces_point[contour_index][line->start_point] - pieces.pieces_point[contour_index][line->end_point];
+    }
+    all_1 = pieces.pieces_point[contour_index][line->start_point];
+    all_2 = pieces.pieces_point[contour_index][line->end_point];
+    std::cout << "Point1: (" << pieces.pieces_point[contour_index][line->start_point].x << ", " << pieces.pieces_point[contour_index][line->start_point].y << ")" << std::endl;
+    std::cout << "Point2: (" << pieces.pieces_point[contour_index][line->end_point].x << ", " << pieces.pieces_point[contour_index][line->end_point].y << ")" << std::endl;
+    std::cout << "vector_line: (" << vector_line.x << ", " << vector_line.y << ")" << std::endl;
+    double theta = std::acosf((vector_x.x * vector_line.x + vector_x.y * vector_line.y)/(std::sqrt(vector_x.x * vector_x.x + vector_x.y * vector_x.y) * std::sqrt(vector_line.x * vector_line.x + vector_line.y * vector_line.y))) * 180 / CV_PI;
+    if(vector_line.y < 0){
+        // theta = theta - 180.0;
+        theta = -theta;
+    }
+    // else{
+    //     theta = 180.0 - theta;
+    // }
+
+    return theta;
+}
