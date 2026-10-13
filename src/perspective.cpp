@@ -153,7 +153,15 @@ void task(const cv::Mat& warped){
         double max_right_length = 0.0;
 
         if(!l60_detect(pieces, max_right_contour_index, k)){
-            l100_detect(pieces, max_right_contour_index, k);
+            if(!l100_detect(pieces, max_right_contour_index, k)){
+                if(std::abs(pieces.pieces_lines[max_right_contour_index][k].length - 100*scale) < 10.0f && pieces.pieces_lines[max_right_contour_index][k].line_right_angle == true){
+                    pieces.turn_angle[max_right_contour_index] = turn_angle(pieces, &pieces.pieces_lines[max_right_contour_index][k], max_right_contour_index);
+                }
+                if(std::abs(pieces.pieces_lines[max_right_contour_index][pieces.pieces_lines[max_right_contour_index][k].last_line_index].length - 100*scale) < 10.0f && pieces.pieces_lines[max_right_contour_index][pieces.pieces_lines[max_right_contour_index][k].last_line_index].line_right_angle == true){
+                    
+                    pieces.turn_angle[max_right_contour_index] = turn_angle(pieces, &pieces.pieces_lines[max_right_contour_index][k], max_right_contour_index);
+                }
+            }
         }
         finished_contour_index.push_back(max_right_contour_index);
         //还需要增加非60、100的边长检测，先不写
@@ -176,9 +184,9 @@ void task(const cv::Mat& warped){
 
 
     
-    size_t next_contour_index = 0;
-    size_t next_line_index = 0;
+
     if(remain_length.left_length != rects_length.left_length && rects_length.left_length != 0.0f){
+        remain_length = rects_length;
         for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
             for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
                 if(pieces.pieces_lines_right_point[i][j] == true){    
@@ -286,6 +294,7 @@ void task(const cv::Mat& warped){
         }
     }
     if(remain_length.down_length != rects_length.down_length && rects_length.down_length != 0.0f){
+        remain_length = rects_length;
         for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
             for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
                 if(pieces.pieces_lines_right_point[i][j] == true){    
@@ -372,17 +381,22 @@ void task(const cv::Mat& warped){
                             continue;
                         }
 
+                        
+                        // rects_length.down_length = rects_length.down_length - pieces.pieces_lines[i][j].length;
+                        // rects_length.left_length = rects_length.left_length - pieces.pieces_lines[i][j].length;
+                        put_position(pieces, final_position, rects_length, i, j);
                         pieces = pieces_temp;
-                        rects_length.down_length = rects_length.down_length - pieces.pieces_lines[i][j].length;
+                        finished_contour_index.push_back(i);
+
                         if(rects_length.down_length < 5.0f) rects_length.down_length = 0.0f;
 
-                        for(size_t n = 0; n < pieces_temp.pieces_point.size(); n++) {
-                            for (size_t k = 0; k < pieces_temp.pieces_point[n].size(); k++) {
-                                cv::circle(lineImg, pieces_temp.pieces_point[n][k], 2, cv::Scalar(255), -1);
-                                cv::line(lineImg, pieces_temp.pieces_point[n][k], pieces_temp.pieces_point[n][(k+1) % pieces_temp.pieces_point[n].size()], cv::Scalar(255), 1);
-                                cv::imwrite("lines.png", lineImg);
-                            }
+                        
+                        for (size_t k = 0; k < pieces_temp.pieces_point[i].size(); k++) {
+                            cv::circle(lineImg, pieces_temp.pieces_point[i][k], 2, cv::Scalar(255), -1);
+                            cv::line(lineImg, pieces_temp.pieces_point[i][k], pieces_temp.pieces_point[i][(k+1) % pieces_temp.pieces_point[i].size()], cv::Scalar(255), 1);
+                            cv::imwrite("lines.png", lineImg);
                         }
+                        
                         //明日：将检测内容写为函数，检测是否超出范围，检测是否重叠，检测邻边向量是否对应
                     }
 
@@ -394,122 +408,66 @@ void task(const cv::Mat& warped){
         }
 
     }
-    if(rects_length.down_length != 0.0f && rects_length.left_length != 0.0f){
-        piece_data pieces_temp = pieces;
+    
+   
+    // put_position(pieces, final_position, rects_length, next_contour_index, next_line_index);
+    //对于先放在右下角的拼图，这三个足够了
+    //未考虑需要多个拼图完善底边、或底边不是直角的情况
+    
+    
+    //第二条边完成
 
-        Translate(pieces_temp, final_position.upper_right, pieces.pieces_point[max_right_contour_index][next_line_index], pieces.turn_angle[max_right_contour_index], max_right_contour_index);
-        
-        bool re_turn = false;
-        for(size_t n = 0; n < pieces.pieces_point.size(); n++) {
-            for (size_t k = 0; k < pieces.pieces_point[n].size(); k++) {
-                if(pieces.pieces_point[n][k].x - final_position.down_right.x <  -1.0f || final_position.down_left.x - pieces.pieces_point[n][k].x < -1.0f ||  final_position.down_left.y - pieces.pieces_point[n][k].y < -1.0f || pieces.pieces_point[n][k].y - final_position.upper_left.y < -1.0f){
-                    std::cout << "拼图超出范围，无法放置" << std::endl;
-                    pieces_temp = pieces;
-                    re_turn = true;
-                    break;
-                }
-            }
-        }
-
-        if(re_turn){
-            pieces_temp.turn_angle[max_right_contour_index] = -(180.0-turn_angle(pieces_temp, &pieces_temp.pieces_lines[max_right_contour_index][next_line_index], max_right_contour_index));
-            Translate(pieces_temp, final_position.upper_right, pieces_temp.pieces_point[max_right_contour_index][next_line_index], pieces_temp.turn_angle[max_right_contour_index], max_right_contour_index);
-            re_turn = false;
-        }
-
-        for(size_t n = 0; n < pieces.pieces_point.size(); n++) {
-            for (size_t k = 0; k < pieces.pieces_point[n].size(); k++) {
-                if(pieces.pieces_point[n][k].x - final_position.down_right.x <  -1.0f || final_position.down_left.x - pieces.pieces_point[n][k].x < -1.0f ||  final_position.down_left.y - pieces.pieces_point[n][k].y < -1.0f || pieces.pieces_point[n][k].y - final_position.upper_left.y < -1.0f){
-                    std::cout << "拼图超出范围，无法放置" << std::endl;
-                    pieces_temp = pieces;
-                    re_turn = true;
-                    break;
-                }
-            }
-        }
-
-        if(re_turn){
-            pieces_temp.turn_angle[max_right_contour_index] = turn_angle(pieces_temp, &pieces_temp.pieces_lines[max_right_contour_index][pieces_temp.pieces_lines[max_right_contour_index][next_line_index].last_line_index], max_right_contour_index);
-            Translate(pieces_temp, final_position.upper_right, pieces_temp.pieces_point[max_right_contour_index][next_line_index], pieces_temp.turn_angle[max_right_contour_index], max_right_contour_index);
-            re_turn = false;
-        }
-
-        for(size_t n = 0; n < pieces.pieces_point.size(); n++) {
-            for (size_t k = 0; k < pieces.pieces_point[n].size(); k++) {
-                if(pieces.pieces_point[n][k].x - final_position.down_right.x <  -1.0f || final_position.down_left.x - pieces.pieces_point[n][k].x < -1.0f ||  final_position.down_left.y - pieces.pieces_point[n][k].y < -1.0f || pieces.pieces_point[n][k].y - final_position.upper_left.y < -1.0f){
-                    std::cout << "拼图超出范围，无法放置" << std::endl;
-                    pieces_temp = pieces;
-                    re_turn = true;
-                    break;
-                }
-            }
-        }
-
-        if(re_turn){
-            pieces_temp.turn_angle[max_right_contour_index] = -(180.0-turn_angle(pieces_temp, &pieces_temp.pieces_lines[max_right_contour_index][pieces_temp.pieces_lines[max_right_contour_index][next_line_index].last_line_index], max_right_contour_index));
-            Translate(pieces_temp, final_position.upper_right, pieces_temp.pieces_point[max_right_contour_index][next_line_index], pieces_temp.turn_angle[max_right_contour_index], max_right_contour_index);
-            re_turn = false;
-        }
-
-        for(auto& index : finished_contour_index) {
-            if(index == max_right_contour_index) continue;
-            if(polygonsOverlap(pieces_temp.pieces_point[index], pieces_temp.pieces_point[max_right_contour_index])){
-                std::cout << "拼图重叠，无法放置" << std::endl;
-                pieces_temp = pieces;
-                break;
-            }
-        }
-
-        bool vector_overlap = areLinesParallel(finished_contour_index, pieces_temp, next_contour_index);
-                                  
-        if(!vector_overlap){
-            std::cout << "拼图边向量不匹配，无法放置" << std::endl;
-            pieces_temp = pieces;
-        }
-
-        pieces = pieces_temp;
-
-        for(size_t n = 0; n < pieces_temp.pieces_point.size(); n++) {
-            for (size_t k = 0; k < pieces_temp.pieces_point[n].size(); k++) {
-                cv::circle(lineImg, pieces_temp.pieces_point[n][k], 2, cv::Scalar(255), -1);
-                cv::line(lineImg, pieces_temp.pieces_point[n][k], pieces_temp.pieces_point[n][(k+1) % pieces_temp.pieces_point[n].size()], cv::Scalar(255), 1);
-                cv::imwrite("lines.png", lineImg);
-            }
-        }
-
-
-    }
-    //对于先放在左下角的拼图，这三个足够了
+    // std::cout << remain_length.right_length<< std::endl;
+    
     
     if(remain_length.right_length != rects_length.right_length && rects_length.right_length != 0.0f){
+        
+        remain_length = rects_length;
+        std::cout << "剩余右边长：" << remain_length.right_length << std::endl;
+
+        //优化下部分代码
+        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
+            if(std::find(finished_contour_index.begin(), finished_contour_index.end(), i) != finished_contour_index.end()) {
+                continue;
+            }
+            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+                 
+                
+                if(std::abs(rects_length.right_length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                    //*+
+                    std::cout << "找到匹配的拼图边长" << std::endl;
+                }
+                else{
+                    for(size_t k = 0; k < pieces.pieces_point[i].size(); k++) {
+                        if(std::find(finished_contour_index.begin(), finished_contour_index.end(), k) != finished_contour_index.end() || i == k) {
+                            continue;
+                        }
+                        for(size_t m = 0; m < pieces.pieces_point[k].size(); m++) {
+                            if(std::abs(rects_length.right_length - pieces.pieces_lines[k][m].length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                                std::cout << "找到匹配的拼图边长组合" << std::endl;
+                            }
+                            
+                        }
+                    }
+                }
+                
+            }
+        }
+    }
+
+    if(remain_length.down_length != rects_length.down_length && rects_length.down_length != 0.0f){
+        remain_length = rects_length;
         for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
             for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
                 if(pieces.pieces_lines_right_point[i][j] == true){    
                     if(std::abs(rects_length.right_length - pieces.pieces_lines[i][j].length) < 5.0f) {
-                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
-                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].end_point], cv::Scalar(0, 0, 255), 3);
-                        cv::imwrite("a4_warped.png", warped);
-                    }
-                }
-            }
-        }
-    }
-    if(remain_length.up_length != rects_length.up_length && rects_length.up_length != 0.0f){
-        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
-            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
-                if(pieces.pieces_lines_right_point[i][j] == true){    
-                    if(std::abs(rects_length.up_length - pieces.pieces_lines[i][j].length) < 5.0f) {
-                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
-                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].end_point], cv::Scalar(0, 0, 255), 3);
-                        cv::imwrite("a4_warped.png", warped);
+                        //
                     }
                 }
             }
         }
     }
 
-    finished_contour_index.push_back(next_contour_index);
-    //第二条边
 
 
     cv::imwrite("lines.png", lineImg);
@@ -517,6 +475,3 @@ void task(const cv::Mat& warped){
     cv::imwrite("edged.png", edged);
     cv::imwrite("binary.png", binary);
 }
-
-
-

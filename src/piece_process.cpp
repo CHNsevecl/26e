@@ -184,7 +184,7 @@ double polygonArea(const std::vector<cv::Point2f>& pts){ //计算面积
 
 cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, rect_length& rects_length, int max_right_contour_index, int k_index){
 
-    Translate(pieces_temp, cv::Point2f(600, 600) , pieces_temp.pieces_point[max_right_contour_index][k_index], pieces_temp.turn_angle[max_right_contour_index], max_right_contour_index);
+    Translate(pieces_temp, cv::Point2f(640, 480) , pieces_temp.pieces_point[max_right_contour_index][k_index], pieces_temp.turn_angle[max_right_contour_index], max_right_contour_index);
         
 
     cv::Point2f vector1 = -pieces_temp.pieces_point[max_right_contour_index][k_index] + pieces_temp.pieces_point[max_right_contour_index][(k_index+1) % pieces_temp.pieces_point[max_right_contour_index].size()];
@@ -193,9 +193,10 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
 
     cv::Point2f start_point;
     //存在直角边时
-    if((std::abs(vector1.x) < 3.0f && vector1.y < 0.0f && std::abs(vector2.y) < 3.0f && vector2.x > 0.0f) || (std::abs(vector2.x) < 3.0f && vector2.y < 0.0f && std::abs(vector1.y) < 3.0f && vector1.x > 0.0f)){
+    //左下直角
+    if((std::abs(vector1.x) < 5.0f && vector1.y < 0.0f && std::abs(vector2.y) < 5.0f && vector2.x > 0.0f) || (std::abs(vector2.x) < 5.0f && vector2.y < 0.0f && std::abs(vector1.y) < 5.0f && vector1.x > 0.0f)){
         start_point = final_position.down_left;
-        if(std::abs(vector1.y) < 3.0f && vector1.x > 0.0f && std::abs(vector2.x) < 3.0f && vector2.y < 0.0f){
+        if(std::abs(vector1.y) < 5.0f && vector1.x > 0.0f && std::abs(vector2.x) < 5.0f && vector2.y < 0.0f){
             rects_length.left.second.y -= std::abs(vector2.y);
             rects_length.down.first.x += std::abs(vector1.x);
         }
@@ -215,9 +216,10 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
             rects_length.down.second = rects_length.down.first;
         }
     }
-    else if((std::abs(vector1.x) < 3.0f && vector1.y < 0.0f && std::abs(vector2.y) < 3.0f && vector2.x < 0.0f) || (std::abs(vector2.x) < 3.0f && vector2.y < 0.0f && std::abs(vector1.y) < 3.0f && vector1.x < 0.0f)){
+    //右下直角
+    else if((std::abs(vector1.x) < 5.0f && vector1.y < 0.0f && std::abs(vector2.y) < 5.0f && vector2.x < 0.0f) || (std::abs(vector2.x) < 5.0f && vector2.y < 0.0f && std::abs(vector1.y) < 5.0f && vector1.x < 0.0f)){
         start_point = final_position.down_right;
-        if(std::abs(vector1.y) < 3.0f && vector1.x < 0.0f && std::abs(vector2.x) < 3.0f && vector2.y < 0.0f){
+        if(std::abs(vector1.y) < 5.0f && vector1.x < 0.0f && std::abs(vector2.x) < 5.0f && vector2.y < 0.0f){
             rects_length.right.second.y -= std::abs(vector2.y);
             rects_length.down.second.x -= std::abs(vector1.x);
         }
@@ -237,9 +239,9 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
             rects_length.down.second = rects_length.down.first;
         }
     }
-    else if((std::abs(vector1.x) < 3.0f && vector1.y > 0.0f && std::abs(vector2.y) < 3.0f && vector2.x < 0.0f) || (std::abs(vector2.x) < 3.0f && vector2.y > 0.0f && std::abs(vector1.y) < 3.0f && vector1.x < 0.0f)){
+    else if((std::abs(vector1.x) < 5.0f && vector1.y > 0.0f && std::abs(vector2.y) < 5.0f && vector2.x < 0.0f) || (std::abs(vector2.x) < 5.0f && vector2.y > 0.0f && std::abs(vector1.y) < 5.0f && vector1.x < 0.0f)){
         start_point = final_position.upper_right;
-        if(std::abs(vector1.y) < 3.0f && vector1.x < 0.0f && std::abs(vector2.x) < 3.0f && vector2.y > 0.0f){
+        if(std::abs(vector1.y) < 5.0f && vector1.x < 0.0f && std::abs(vector2.x) < 5.0f && vector2.y > 0.0f){
             rects_length.right.first.y += std::abs(vector2.y);
             rects_length.up.second.x -= std::abs(vector1.x);
         }
@@ -259,9 +261,9 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
             rects_length.up.second = rects_length.up.first;
         }
     }
-    else if((std::abs(vector1.x) < 3.0f && vector1.y > 0.0f && std::abs(vector2.y) < 3.0f && vector2.x > 0.0f) || (std::abs(vector2.x) < 3.0f && vector2.y > 0.0f && std::abs(vector1.y) < 3.0f && vector1.x > 0.0f)){
+    else if((std::abs(vector1.x) < 5.0f && vector1.y > 0.0f && std::abs(vector2.y) < 5.0f && vector2.x > 0.0f) || (std::abs(vector2.x) < 5.0f && vector2.y > 0.0f && std::abs(vector1.y) < 5.0f && vector1.x > 0.0f)){
         start_point = final_position.upper_left;
-        if(std::abs(vector1.y) < 3.0f && vector1.x > 0.0f && std::abs(vector2.x) < 3.0f && vector2.y > 0.0f){
+        if(std::abs(vector1.y) < 5.0f && vector1.x > 0.0f && std::abs(vector2.x) < 5.0f && vector2.y > 0.0f){
             rects_length.left.first.y += std::abs(vector2.y);
             rects_length.up.first.x += std::abs(vector1.x);
         }
