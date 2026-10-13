@@ -98,12 +98,13 @@ void task(const cv::Mat& warped){
     pieces.pieces_lines = lines;
     pieces.turn_angle.resize(pieces.pieces_point.size(), 0.0);
     pieces.pieces_lines_right_point.resize(pieces.pieces_point.size());
+    std::vector<size_t> finished_contour_index;
+    finished_contour_index.reserve(pieces.pieces_point.size());
 
     for(size_t i = 0; i < pieces.pieces_lines_right_point.size(); i++) {
         pieces.pieces_lines_right_point[i].resize(pieces.pieces_lines[i].size(), false);
     }
 
-    piece_data pieces_original = pieces; // 保存原始数据
     //计算重心
     gravity_calculation(pieces, lineImg);
 
@@ -152,52 +153,209 @@ void task(const cv::Mat& warped){
         if( pieces.pieces_lines_right_point[max_right_contour_index][k] == false) {continue;}
         double max_right_length = 0.0;
 
-        //明日工作：将检测60、100的边长改为函数
-        //思路：遍历所有变，有可以和边长匹配的边，放置，若无，说明该边长不匹配，旋转后再放置
         if(!l60_detect(pieces, max_right_contour_index, k)){
             l100_detect(pieces, max_right_contour_index, k);
         }
+        finished_contour_index.push_back(max_right_contour_index);
+        //还需要增加非60、100的边长检测，先不写
 
         cv::Point start_point = put_position(pieces, final_position, rects_length, max_right_contour_index, k);
    
         Translate(pieces, start_point, pieces.pieces_point[max_right_contour_index][k], pieces.turn_angle[max_right_contour_index], max_right_contour_index);
-    
-    }
-    
 
-    for(size_t i = 0; i < pieces.pieces_point.size(); i++) {
-        for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
-            cv::circle(lineImg, pieces.pieces_point[i][j], 2, cv::Scalar(255), -1);
-            cv::line(lineImg, pieces.pieces_point[i][j], pieces.pieces_point[i][(j+1) % pieces.pieces_point[i].size()], cv::Scalar(255), 1);
-            cv::imwrite("lines.png", lineImg);
+        for(size_t i = 0; i < pieces.pieces_point.size(); i++) {
+            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+                cv::circle(lineImg, pieces.pieces_point[i][j], 2, cv::Scalar(255), -1);
+                cv::line(lineImg, pieces.pieces_point[i][j], pieces.pieces_point[i][(j+1) % pieces.pieces_point[i].size()], cv::Scalar(255), 1);
+                cv::imwrite("lines.png", lineImg);
+            }
         }
+    
     }
+
+
     
     size_t next_contour_index = 0;
     size_t next_line_index = 0;
     if(remain_length.left_length != rects_length.left_length && rects_length.left_length != 0.0f){
         for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
             for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
-                if(std::abs(rects_length.left_length - pieces.pieces_lines[i][j].length) < 5.0f) {
-                    cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
-                    cv::imwrite("a4_warped.png", warped);
-                }
-            }
-        }
-
-    }
-    if(remain_length.down_length != rects_length.down_length && rects_length.down_length != 0.0f){
-        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
-            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
-                if(pieces.pieces_lines[i][j].line_right_angle == true){    
-                    if(std::abs(rects_length.down_length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                if(pieces.pieces_lines_right_point[i][j] == true){    
+                    if(std::abs(rects_length.left_length - pieces.pieces_lines[i][j].length) < 5.0f) {
                         cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].end_point], cv::Scalar(0, 0, 255), 3);
                         cv::imwrite("a4_warped.png", warped);
                     }
                 }
             }
         }
+    }
 
+    if(remain_length.down_length != rects_length.down_length && rects_length.down_length != 0.0f){
+        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
+            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+                if(pieces.pieces_lines_right_point[i][j] == true){    
+
+
+
+
+
+                    if(std::abs(rects_length.down_length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].end_point], cv::Scalar(0, 0, 255), 3);
+                        cv::imwrite("a4_warped.png", warped);
+
+                        piece_data pieces_temp = pieces;
+
+                        pieces_temp.turn_angle[i] = turn_angle(pieces_temp, &pieces_temp.pieces_lines[i][j], i);
+
+                        Translate(pieces_temp, final_position.down_right, pieces_temp.pieces_point[i][j], pieces_temp.turn_angle[i], i);
+
+                        //检测是否超出范围
+                        bool re_turn = false;
+                        for (size_t m = 0; m < pieces_temp.pieces_point[i].size(); m++) {
+                            if(pieces_temp.pieces_point[i][m].x - final_position.down_right.x <  -1.0f || final_position.down_left.x - pieces_temp.pieces_point[i][m].x < -1.0f ||  final_position.down_left.y - pieces_temp.pieces_point[i][m].y < -1.0f || pieces_temp.pieces_point[i][m].y - final_position.upper_left.y < -1.0f){
+                                re_turn = true;
+                                pieces_temp = pieces;
+                                break;
+                            }
+                        }
+                        if(re_turn){
+                            pieces_temp.turn_angle[i] = -(180.0-turn_angle(pieces_temp, &pieces_temp.pieces_lines[i][j], i));
+
+                            Translate(pieces_temp, final_position.down_right, pieces_temp.pieces_point[i][j], pieces_temp.turn_angle[i], i);
+                            re_turn = false;
+                        }
+
+
+                        for (size_t m = 0; m < pieces_temp.pieces_point[i].size(); m++) {
+                            if(pieces_temp.pieces_point[i][m].x - final_position.down_right.x <  -1.0f || final_position.down_left.x - pieces_temp.pieces_point[i][m].x < -1.0f ||  final_position.down_left.y - pieces_temp.pieces_point[i][m].y < -1.0f || pieces_temp.pieces_point[i][m].y - final_position.upper_left.y < -1.0f){
+                                re_turn = true;
+                                pieces_temp = pieces;
+                                break;
+                            }
+                        }
+
+                        if(re_turn){
+                            pieces_temp.turn_angle[i] = turn_angle(pieces_temp, &pieces_temp.pieces_lines[i][pieces_temp.pieces_lines[i][j].last_line_index], i);
+
+                            Translate(pieces_temp, final_position.down_right, pieces_temp.pieces_point[i][j], pieces_temp.turn_angle[i], i);
+                            re_turn = false;
+                        }
+
+
+                        for (size_t m = 0; m < pieces_temp.pieces_point[i].size(); m++) {
+                            if(pieces_temp.pieces_point[i][m].x - final_position.down_right.x <  -1.0f || final_position.down_left.x - pieces_temp.pieces_point[i][m].x < -1.0f ||  final_position.down_left.y - pieces_temp.pieces_point[i][m].y < -1.0f || pieces_temp.pieces_point[i][m].y - final_position.upper_left.y < -1.0f){
+                                re_turn = true;
+                                pieces_temp = pieces;
+                                break;
+                            }
+                        }
+                        if(re_turn){
+                            pieces_temp.turn_angle[i] = -(180.0-turn_angle(pieces_temp, &pieces_temp.pieces_lines[i][pieces_temp.pieces_lines[i][j].last_line_index], i));
+
+                            Translate(pieces_temp, final_position.down_right, pieces_temp.pieces_point[i][j], pieces_temp.turn_angle[i], i);
+                            re_turn = false;
+                        }
+
+                        bool overlap = false;
+                        for(size_t n = 0; n < finished_contour_index.size(); n++) {
+                            if(n == i)  continue;
+                            if(!polygonsOverlap(pieces_temp.pieces_point[finished_contour_index[n]], pieces_temp.pieces_point[i])){
+                                overlap = true;
+                                break;
+                            }
+                        }
+                        
+                        if(overlap){
+                            std::cout << "拼图重叠，无法放置" << std::endl;
+                            continue;
+                        }
+
+                        bool vector_overlap = true;
+                        for(auto& finished_index : finished_contour_index) {
+                            for (size_t k = 0; k < pieces_temp.pieces_point[finished_index].size(); k++) {
+                                if(pieces_temp.pieces_lines_right_point[finished_index][k] == true){
+                                    continue;
+                                }
+                                cv::Point2f vector_x = pieces_temp.pieces_lines[finished_index][k].line_vector;
+                                for (size_t m = 0; m < pieces_temp.pieces_point[i].size(); m++) {
+                                    if(pieces_temp.pieces_lines_right_point[i][m] == true){
+                                        continue;
+                                    }
+                                    cv::Point2f vector_line = pieces_temp.pieces_lines[i][m].line_vector;
+                                    
+                                    double theta = std::acosf((vector_x.x * vector_line.x + vector_x.y * vector_line.y)/(std::sqrt(vector_x.x * vector_x.x + vector_x.y * vector_x.y) * std::sqrt(vector_line.x * vector_line.x + vector_line.y * vector_line.y))) * 180 / CV_PI;
+                                    if((std::abs(theta) < 5.0f || std::abs(theta - 180.0f) < 5.0f)){
+                                        if(cv::norm(pieces_temp.pieces_point[finished_index][k] - pieces_temp.pieces_point[i][m]) < 5.0f){
+                                            vector_overlap = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if(!vector_overlap){
+                            std::cout << "拼图边向量不匹配，无法放置" << std::endl;
+                            continue;
+                        }
+
+                        pieces = pieces_temp;
+                        rects_length.down_length = rects_length.down_length - pieces.pieces_lines[i][j].length;
+                        if(rects_length.down_length < 5.0f) rects_length.down_length = 0.0f;
+
+                        for(size_t n = 0; n < pieces_temp.pieces_point.size(); n++) {
+                            for (size_t k = 0; k < pieces_temp.pieces_point[n].size(); k++) {
+                                cv::circle(lineImg, pieces_temp.pieces_point[n][k], 2, cv::Scalar(255), -1);
+                                cv::line(lineImg, pieces_temp.pieces_point[n][k], pieces_temp.pieces_point[n][(k+1) % pieces_temp.pieces_point[n].size()], cv::Scalar(255), 1);
+                                cv::imwrite("lines.png", lineImg);
+                            }
+                        }
+
+                        
+
+         
+                        
+ 
+                        //明日：将检测内容写为函数
+                        
+
+
+                    }
+
+                    
+
+
+                }
+            }
+        }
+
+    }
+    if(remain_length.right_length != rects_length.right_length && rects_length.right_length != 0.0f){
+        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
+            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+                if(pieces.pieces_lines_right_point[i][j] == true){    
+                    if(std::abs(rects_length.right_length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].end_point], cv::Scalar(0, 0, 255), 3);
+                        cv::imwrite("a4_warped.png", warped);
+                    }
+                }
+            }
+        }
+    }
+    if(remain_length.up_length != rects_length.up_length && rects_length.up_length != 0.0f){
+        for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
+            for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
+                if(pieces.pieces_lines_right_point[i][j] == true){    
+                    if(std::abs(rects_length.up_length - pieces.pieces_lines[i][j].length) < 5.0f) {
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0, 0, 255), 3);
+                        cv::line(warped, pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].start_point], pieces.pieces_point[i][pieces.pieces_lines[i][pieces.pieces_lines[i][j].last_line_index].end_point], cv::Scalar(0, 0, 255), 3);
+                        cv::imwrite("a4_warped.png", warped);
+                    }
+                }
+            }
+        }
     }
 
 
@@ -238,6 +396,10 @@ void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tigh
         temp_vector.x = pieces.center_gravity[index].x + pieces.gra_p_vector[index][j].x;
         temp_vector.y = pieces.center_gravity[index].y + pieces.gra_p_vector[index][j].y;
         pieces.pieces_point[index][j] = temp_vector;
+    }
+
+    for(size_t j = 0; j < pieces.pieces_lines[index].size(); j++) {
+        pieces.pieces_lines[index][j].line_vector = pieces.pieces_point[index][pieces.pieces_lines[index][j].end_point] - pieces.pieces_point[index][pieces.pieces_lines[index][j].start_point];
     }
     
 }
@@ -347,8 +509,8 @@ void leg_right_judgment(piece_data& pieces,const cv::Mat& warped, std::vector<st
             
             
             if(std::abs(theta - 90.0) < 3.0f){
-                cv::line(warped, pieces.pieces_point[i][j], pieces.pieces_point[i][pieces.pieces_lines[i][j].end_point], cv::Scalar(0,255,0), 3);
-                cv::line(warped, pieces.pieces_point[i][line2->start_point], pieces.pieces_point[i][line2->end_point], cv::Scalar(0,255 ,0), 3);
+                cv::line(warped, pieces.pieces_point[i][j], pieces.pieces_point[i][pieces.pieces_lines[i][j].start_point], cv::Scalar(255,0,0), 3);
+                cv::line(warped, pieces.pieces_point[i][line2->start_point], pieces.pieces_point[i][line2->end_point], cv::Scalar(255,0 ,0), 3);
                 cv::imwrite("a4_warped.png", warped);
                 if(pieces.pieces_lines[i][j].start_point == line2->end_point || pieces.pieces_lines[i][j].start_point == line2->start_point){
                     for(size_t k = 0; k < pieces.pieces_point[i].size(); k++) {
@@ -389,7 +551,7 @@ double polygonArea(const std::vector<cv::Point2f>& pts){ //计算面积
 }
 
 cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, rect_length& rects_length, int max_right_contour_index, int k_index){
-    std::cout << "theta_put: " << pieces_temp.turn_angle[max_right_contour_index] << std::endl;
+
     Translate(pieces_temp, cv::Point2f(600, 600) , pieces_temp.pieces_point[max_right_contour_index][k_index], pieces_temp.turn_angle[max_right_contour_index], max_right_contour_index);
         
 
@@ -505,17 +667,15 @@ bool l60_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ){
     return false;
 }
 
-//需要修改
+//未测试
 bool l100_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ){
-    if(std::abs(pieces.pieces_lines[contour_index][line_index].length - 100*scale) < 10.0f){
+    if(std::abs(pieces.pieces_lines[contour_index][line_index].length - 100*scale) < 10.0f && pieces.pieces_lines[contour_index][line_index].line_right_angle == true){
         pieces.turn_angle[contour_index] = turn_angle(pieces, &pieces.pieces_lines[contour_index][line_index], contour_index);
-        std::cout << "length: " << pieces.pieces_lines[contour_index][line_index].length << std::endl;
         return true;
     }
-    if(std::abs(pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length - 100*scale) < 10.0f){
-        pieces.turn_angle[contour_index] = turn_angle(pieces, &pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index], contour_index);
-        // std::cout << "theta: " << pieces.turn_angle[contour_index] << std::endl;
-        std::cout << "length: " << pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length << std::endl;
+    if(std::abs(pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].length - 100*scale) < 10.0f && pieces.pieces_lines[contour_index][pieces.pieces_lines[contour_index][line_index].last_line_index].line_right_angle == true){
+        
+        pieces.turn_angle[contour_index] = turn_angle(pieces, &pieces.pieces_lines[contour_index][line_index], contour_index);
         return true;
     }
     return false;
@@ -549,6 +709,8 @@ bool Traverse_Area(piece_data& pieces, double& max_right_contour, size_t& max_ri
     }
 }
 
+//旋转时，是以直角为原点的向量计算，计算该向量与x轴的夹角，返回旋转角度
+//若直角在右侧，要注意方向改变
 double turn_angle(piece_data& pieces, line_data* line, size_t contour_index) {
     cv::Point2f vector_x = cv::Point2f(1, 0);
     cv::Point2f vector_line;
@@ -560,9 +722,7 @@ double turn_angle(piece_data& pieces, line_data* line, size_t contour_index) {
     }
     all_1 = pieces.pieces_point[contour_index][line->start_point];
     all_2 = pieces.pieces_point[contour_index][line->end_point];
-    std::cout << "Point1: (" << pieces.pieces_point[contour_index][line->start_point].x << ", " << pieces.pieces_point[contour_index][line->start_point].y << ")" << std::endl;
-    std::cout << "Point2: (" << pieces.pieces_point[contour_index][line->end_point].x << ", " << pieces.pieces_point[contour_index][line->end_point].y << ")" << std::endl;
-    std::cout << "vector_line: (" << vector_line.x << ", " << vector_line.y << ")" << std::endl;
+
     double theta = std::acosf((vector_x.x * vector_line.x + vector_x.y * vector_line.y)/(std::sqrt(vector_x.x * vector_x.x + vector_x.y * vector_x.y) * std::sqrt(vector_line.x * vector_line.x + vector_line.y * vector_line.y))) * 180 / CV_PI;
     if(vector_line.y < 0){
         // theta = theta - 180.0;
@@ -574,3 +734,96 @@ double turn_angle(piece_data& pieces, line_data* line, size_t contour_index) {
 
     return theta;
 }
+
+
+//
+static bool pointDeepInsidePolygon(const cv::Point2f& pt,
+                                   const std::vector<cv::Point2f>& poly,
+                                   double tol)
+{
+    double d = cv::pointPolygonTest(poly, pt, true); // true: 返回有符号距离
+    // d > 0 表示在内部，d 的绝对值是到最近边的距离
+    return d > tol;
+}
+
+// 判断两条线段是否"真正"相交（交点不在容差端点附近）
+static bool segmentsCrossStrict(const cv::Point2f& p1, const cv::Point2f& p2,
+                                const cv::Point2f& q1, const cv::Point2f& q2,
+                                double tol)
+{
+    auto cross = [](const cv::Point2f& a, const cv::Point2f& b) {
+        return a.x * b.y - a.y * b.x;
+    };
+    auto sub = [](const cv::Point2f& a, const cv::Point2f& b) {
+        return cv::Point2f(a.x - b.x, a.y - b.y);
+    };
+    auto len = [](const cv::Point2f& v) {
+        return std::sqrt(v.x * v.x + v.y * v.y);
+    };
+
+    cv::Point2f r = sub(p2, p1);
+    cv::Point2f s = sub(q2, q1);
+    float denom = cross(r, s);
+    cv::Point2f qp = sub(q1, p1);
+
+    if (std::abs(denom) < 1e-9f) {
+        // 平行（含共线）→ 不算"真正交叉"
+        return false;
+    }
+
+    float t = cross(qp, s) / denom;
+    float u = cross(qp, r) / denom;
+
+    // 必须在两条线段内部（不在端点附近）
+    if (t < 0.f || t > 1.f || u < 0.f || u > 1.f)
+        return false;
+
+    // 计算交点到各端点的距离，判断是否在容差范围内
+    cv::Point2f inter(p1.x + t * r.x, p1.y + t * r.y);
+
+    // 如果交点距离任意端点 <= tol，视为"贴合"，不算真正交叉
+    if (len(sub(inter, p1)) <= tol) return false;
+    if (len(sub(inter, p2)) <= tol) return false;
+    if (len(sub(inter, q1)) <= tol) return false;
+    if (len(sub(inter, q2)) <= tol) return false;
+
+    return true;
+}
+
+// 主函数：判断两个多边形是否重合（顶点/边在 tol 像素内的接触不算）
+bool polygonsOverlap(const std::vector<cv::Point2f>& polyA,
+                     const std::vector<cv::Point2f>& polyB,
+                     double tol)
+{
+    if (polyA.size() < 3 || polyB.size() < 3)
+        return false;
+
+    size_t nA = polyA.size(), nB = polyB.size();
+
+    // 1. 检查 A 的顶点是否深入 B 内部超过 tol
+    for (const auto& p : polyA) {
+        if (pointDeepInsidePolygon(p, polyB, tol))
+            return true;
+    }
+
+    // 2. 检查 B 的顶点是否深入 A 内部超过 tol
+    for (const auto& p : polyB) {
+        if (pointDeepInsidePolygon(p, polyA, tol))
+            return true;
+    }
+
+    // 3. 检查边是否"真正"交叉（交点不在容差端点附近）
+    for (size_t i = 0; i < nA; ++i) {
+        const cv::Point2f& a1 = polyA[i];
+        const cv::Point2f& a2 = polyA[(i + 1) % nA];
+        for (size_t j = 0; j < nB; ++j) {
+            const cv::Point2f& b1 = polyB[j];
+            const cv::Point2f& b2 = polyB[(j + 1) % nB];
+            if (segmentsCrossStrict(a1, a2, b1, b2, tol))
+                return true;
+        }
+    }
+
+    return false;
+}
+

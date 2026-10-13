@@ -63,3 +63,4 @@ bool Traverse_Area(piece_data& pieces, double& max_right_contour, size_t& max_ri
 double polygonArea(const std::vector<cv::Point2f>& pts); //计算面积
 bool l60_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ); //长度60检测 
 bool l100_detect(piece_data& pieces,size_t& contour_index, size_t& line_index ); //长度100检测 
+bool polygonsOverlap(const std::vector<cv::Point2f>& polyA,const std::vector<cv::Point2f>& polyB,double tol = 5.0);
