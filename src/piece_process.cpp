@@ -40,10 +40,12 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
     
     cv::cvtColor(warped, gray, cv::COLOR_BGR2GRAY);
     
-
-    cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 5);  // 核可适当加大
+    std::vector<cv::Point2f> pts;
+   
+    cv::GaussianBlur(gray, blurred, cv::Size(3, 3), 1.0);  // 核可适当加大
+    // cv::medianBlur(gray, blurred, 3);
     cv::imwrite("blurred.png", blurred);
-    cv::threshold(blurred, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    cv::threshold(blurred, binary, 50, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
     cv::imwrite("origin_binary.png", binary);
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(1, 1));
     cv::dilate(binary, binary, kernel);
@@ -64,7 +66,31 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
         double peri = cv::arcLength(contours[i], true);
         cv::approxPolyDP(contours[i], approx, 0.01 * peri, true);
         
-        lines[i].reserve(approx.size());
+        std::vector<cv::Point2f> pts;
+        pts.reserve(approx.size());
+        for (const auto& p : approx) {
+            pts.emplace_back(static_cast<float>(p.x),
+                             static_cast<float>(p.y));
+        }
+
+        // 7.3 亚像素精修（输入必须是灰度图 gray）
+        cv::cornerSubPix(gray, pts,
+                         cv::Size(5, 5),
+                         cv::Size(-1, -1),
+                         cv::TermCriteria(cv::TermCriteria::EPS +
+                                          cv::TermCriteria::MAX_ITER,
+                                          30, 0.01));
+
+        // 7.4 clamp 到图像范围内，防止画线越界
+        for (auto& p : pts) {
+            p.x = std::max(0.f, std::min(p.x, static_cast<float>(gray.cols - 1)));
+            p.y = std::max(0.f, std::min(p.y, static_cast<float>(gray.rows - 1)));
+        }
+
+        // 7.5 用精修后的顶点生成线段
+        lines[i].reserve(pts.size());
+        pieces.pieces_point[i].reserve(pts.size());
+
         for (size_t j = 0; j < approx.size(); j++) {
             cv::Point2f p1 = approx[j];
             cv::Point2f p2 = approx[(j + 1) % approx.size()];
@@ -487,5 +513,17 @@ bool areLinesParallel(std::vector<size_t> finished_contour_index, piece_data& pi
         }
     }
     
+    return false;
+}
+
+bool areOutofarea(piece_data& pieces_temp, rect_position& final_position, size_t contour_index, double tol) {
+    for (size_t m = 0; m < pieces_temp.pieces_point[contour_index].size(); m++) {
+        if(final_position.down_right.x - pieces_temp.pieces_point[contour_index][m].x < -tol || final_position.down_left.x - pieces_temp.pieces_point[contour_index][m].x > tol ||  final_position.down_left.y - pieces_temp.pieces_point[contour_index][m].y < -tol || final_position.upper_left.y - pieces_temp.pieces_point[contour_index][m].y  > tol){
+            return true;
+            // pieces_temp = pieces;
+            break;
+        }
+    }
+
     return false;
 }
