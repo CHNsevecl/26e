@@ -45,7 +45,7 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
     cv::GaussianBlur(gray, blurred, cv::Size(3, 3), 1.0);  // 核可适当加大
     // cv::medianBlur(gray, blurred, 3);
     cv::imwrite("blurred.png", blurred);
-    cv::threshold(blurred, binary, 50, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    cv::threshold(blurred, binary, 230, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
     cv::imwrite("origin_binary.png", binary);
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(1, 1));
     cv::dilate(binary, binary, kernel);
@@ -79,7 +79,7 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
                          cv::Size(-1, -1),
                          cv::TermCriteria(cv::TermCriteria::EPS +
                                           cv::TermCriteria::MAX_ITER,
-                                          30, 0.01));
+                                          30, 0.1));
 
         // 7.4 clamp 到图像范围内，防止画线越界
         for (auto& p : pts) {

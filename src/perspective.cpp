@@ -25,8 +25,10 @@ vector<Point2f> orderPoints(vector<Point2f> pts) {
 Mat a4_perspective_transform(const Mat& img) {
     Mat gray, blurred, edged;
     cvtColor(img, gray, COLOR_BGR2GRAY);
-    GaussianBlur(gray, blurred, Size(gaussian_kernel_size, gaussian_kernel_size), 0); //高斯模糊
-    Canny(blurred, edged, 50, 150);
+    
+    cv::Canny(gray, edged, 100, 150);
+    
+    cv::imwrite("edged_origin.png", edged);
 
     // 2. 找轮廓
     vector<vector<Point>> contours;
@@ -38,6 +40,7 @@ Mat a4_perspective_transform(const Mat& img) {
 
     for (auto& c : contours) {
         double area = contourArea(c);
+        std::cout << "轮廓面积: " << area << std::endl;
         if (area < 10000) continue; // 过滤小轮廓
 
         // 多边形逼近
@@ -433,7 +436,6 @@ void task(const cv::Mat& warped){
     if(remain_length.right_length != rects_length.right_length && rects_length.right_length != 0.0f){
         
         remain_length = rects_length;
-        std::cout << "剩余右边长：" << remain_length.right_length << std::endl;
 
         //优化下部分代码
         for (size_t i = 0; i < pieces.pieces_point.size(); i++) {
@@ -442,8 +444,7 @@ void task(const cv::Mat& warped){
             }
             for (size_t j = 0; j < pieces.pieces_point[i].size(); j++) {
                  
-                std::cout << "单边做差： " << std::abs(rects_length.right_length - pieces.pieces_lines[i][j].length) << " 边余长：" << remain_length.right_length << " 拼图边长：" << pieces.pieces_lines[i][j].length << std::endl;
-                // if(pieces.pieces_lines_right_point[i][j] == true){    
+                
                     if(std::abs(rects_length.right_length - pieces.pieces_lines[i][j].length) < 15.0f && pieces.pieces_lines[i][j].line_right_angle == true) {
                         //*+
                         
@@ -454,7 +455,6 @@ void task(const cv::Mat& warped){
                                 continue;
                             }
                             for(size_t m = 0; m < pieces.pieces_point[k].size(); m++) {
-                                std::cout << "组合做差： " << std::abs(rects_length.right_length - pieces.pieces_lines[k][m].length - pieces.pieces_lines[i][j].length) << " 边余长：" << remain_length.right_length << " 拼图边长：" << pieces.pieces_lines[i][j].length << "拼图边长2：" << pieces.pieces_lines[k][m].length << std::endl;
                                 if(!(std::abs(rects_length.right_length - pieces.pieces_lines[k][m].length - pieces.pieces_lines[i][j].length) < 15.0f)) {
                                     continue;
                                 }
