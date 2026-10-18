@@ -62,6 +62,9 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
 
     std::cout << "Contours found: " << contours.size() << std::endl;
     for (size_t i = 0; i < contours.size(); i++) {
+        if(cv::contourArea(contours[i]) < 1000) {
+            continue;
+        }
         std::vector<cv::Point> approx;
         double peri = cv::arcLength(contours[i], true);
         cv::approxPolyDP(contours[i], approx, 0.01 * peri, true);
@@ -516,14 +519,33 @@ bool areLinesParallel(std::vector<size_t> finished_contour_index, piece_data& pi
     return false;
 }
 
-bool areOutofarea(piece_data& pieces_temp, rect_position& final_position, size_t contour_index, double tol) {
-    for (size_t m = 0; m < pieces_temp.pieces_point[contour_index].size(); m++) {
-        if(final_position.down_right.x - pieces_temp.pieces_point[contour_index][m].x < -tol || final_position.down_left.x - pieces_temp.pieces_point[contour_index][m].x > tol ||  final_position.down_left.y - pieces_temp.pieces_point[contour_index][m].y < -tol || final_position.upper_left.y - pieces_temp.pieces_point[contour_index][m].y  > tol){
+bool areOutofarea(piece_data& pieces_temp,
+                  rect_position& final_position,
+                  size_t contour_index,
+                  double tol) {
+    const double left   = final_position.upper_left.x;
+    const double right  = final_position.down_right.x;
+    const double top    = final_position.upper_left.y;
+    const double bottom = final_position.down_right.y;
+
+    for (const auto& point : pieces_temp.pieces_point[contour_index]) {
+        if (point.x < left - tol  ||  // 超出左边界
+            point.x > right + tol ||  // 超出右边界
+            point.y < top - tol   ||  // 超出上边界
+            point.y > bottom + tol) { // 超出下边界
             return true;
-            // pieces_temp = pieces;
-            break;
         }
     }
 
     return false;
+}
+
+bool draw_piece(piece_data& pieces_temp, cv::Mat& lineImg, size_t contour_index) {
+    for (size_t k = 0; k < pieces_temp.pieces_point[contour_index].size(); k++) {
+        cv::circle(lineImg, pieces_temp.pieces_point[contour_index][k], 2, cv::Scalar(255), -1);
+        cv::line(lineImg, pieces_temp.pieces_point[contour_index][k], pieces_temp.pieces_point[contour_index][(k+1) % pieces_temp.pieces_point[contour_index].size()], cv::Scalar(255), 1);
+    }
+    cv::imwrite("lines.png", lineImg);
+
+    return true;
 }

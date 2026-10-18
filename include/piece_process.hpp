@@ -8,7 +8,7 @@ void Translate(piece_data& pieces, cv::Point2f target_point,cv::Point2f leg_tigh
 double turn_angle(piece_data& pieces, line_data* line, size_t contour_index);
 void leg_right_judgment(piece_data& pieces,const cv::Mat& warped, std::vector<std::pair<double, double>>& index, double* angle_index, int& aindex) ; //判断直角边
 piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, cv::Mat& edged, cv::Mat& binary ,cv::Mat& lineImg, std::vector<std::vector<struct line_data>>& lines); //提取拼图轮廓信息
-
+bool draw_piece(piece_data& pieces_temp, cv::Mat& lineImg, size_t contour_index);
 //用put_position之前，必须确保pieces未修改且保有旋转角度
 cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, rect_length& rects_length, int max_right_contour_index, int k_index);//直角合适位置
 
@@ -17,7 +17,7 @@ cv::Point2f put_position(piece_data pieces_temp, rect_position& final_position, 
 //计算重心
 void gravity_calculation(piece_data& pieces, cv::Mat& lineImg); 
 
-//遍历面积
+//遍历面积，返回的拼图是包含直角的
 bool Traverse_Area(piece_data& pieces, double& max_right_contour, size_t& max_right_contour_index); 
 
 //计算面积
