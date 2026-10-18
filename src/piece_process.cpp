@@ -40,8 +40,6 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
     
     cv::cvtColor(warped, gray, cv::COLOR_BGR2GRAY);
     
-    std::vector<cv::Point2f> pts;
-   
     cv::GaussianBlur(gray, blurred, cv::Size(3, 3), 1.0);  // 核可适当加大
     // cv::medianBlur(gray, blurred, 3);
     cv::imwrite("blurred.png", blurred);
@@ -91,23 +89,21 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
         }
 
         // 7.5 用精修后的顶点生成线段
+        lines[i].clear();
         lines[i].reserve(pts.size());
-        pieces.pieces_point[i].reserve(pts.size());
+        pieces.pieces_point[i] = pts;
 
-        for (size_t j = 0; j < approx.size(); j++) {
-            cv::Point2f p1 = approx[j];
-            cv::Point2f p2 = approx[(j + 1) % approx.size()];
+        for (size_t j = 0; j < pts.size(); j++) {
+            const cv::Point2f p1 = pts[j];
+            const cv::Point2f p2 = pts[(j + 1) % pts.size()];
             double length = cv::norm(p2 - p1);
-            double angle = std::atan2(p2.y - p1.y, p2.x - p1.x) * 180 / CV_PI;
-            line_data ld{length, 0.0, p2 - p1, (j + 1) % approx.size() ,j, std::make_pair(-1, -1), false,0};
+            line_data ld{length, 0.0, p2 - p1, (j + 1) % pts.size() ,j, std::make_pair(-1, -1), false,0};
             lines[i].push_back(ld);
-            pieces.pieces_point[i].push_back(p1);
             cv::line(lineImg, p1, p2, cv::Scalar(255), 1);
-
-            cv::imwrite("Line Segment.png", lineImg);
         }
     }
 
+    cv::imwrite("Line Segment.png", lineImg);
     return pieces;
 }
 
