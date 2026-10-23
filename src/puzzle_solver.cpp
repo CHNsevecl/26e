@@ -4,12 +4,23 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <map>
+#include <limits>
 #include <set>
 #include <tuple>
 
 namespace {
 using Polygon = std::vector<cv::Point2f>;
 using Triangle = std::array<cv::Point2f, 3>;
+
+bool valid_options(const PuzzleOptions& options) {
+    return std::isfinite(options.position_tolerance) && options.position_tolerance >= 0 &&
+        std::isfinite(options.angle_tolerance_degrees) && options.angle_tolerance_degrees >= 0 &&
+        std::isfinite(options.min_coverage) && options.min_coverage > 0 && options.min_coverage <= 1 &&
+        std::isfinite(options.max_overlap_ratio) && options.max_overlap_ratio >= 0 &&
+        std::isfinite(options.max_outside_ratio) && options.max_outside_ratio >= 0 &&
+        std::isfinite(options.time_limit_seconds) && options.time_limit_seconds > 0;
+}
 
 double cross(cv::Point2f a, cv::Point2f b) {
     return static_cast<double>(a.x) * b.y - static_cast<double>(a.y) * b.x;
@@ -133,11 +144,12 @@ double contact_length(const Polygon& a, const Polygon& b, const PuzzleOptions& o
 
 class Search {
 public:
-    Search(const std::vector<Polygon>& polygons, cv::Rect2f target, const PuzzleOptions& options)
-        : target_(target), options_(options), start_(std::chrono::steady_clock::now()) {
-        border_ = {{target.x, target.y}, {target.x + target.width, target.y},
-                   {target.x + target.width, target.y + target.height}, {target.x, target.y + target.height}};
-        border_triangles_ = triangulate(border_);
+    Search(const std::vector<Polygon>& polygons, cv::Rect2f target, const PuzzleOptions& options,
+           std::vector<cv::Rect2f> targets = {}, cv::Size2f min_size = {}, cv::Size2f max_size = {})
+        : target_(target), options_(options), start_(std::chrono::steady_clock::now()),
+          targets_(std::move(targets)), min_size_(min_size), max_size_(max_size) {
+        set_target(target);
+        if (targets_.empty()) result_.target = target;
         for (std::size_t i = 0; i < polygons.size(); ++i) {
             if (polygons[i].empty()) continue; // line_process 会为被过滤的轮廓保留空槽。
             for (const auto p : polygons[i])
@@ -166,12 +178,33 @@ public:
         search_beam();
         if (!result_.solved && !result_.search_limit_reached) {
             placed_.clear();
-            visit();
+            for (const auto target : targets_.empty() ? std::vector<cv::Rect2f>{target_} : targets_) {
+                set_target(target);
+                if (visit() || result_.search_limit_reached) break;
+            }
         }
         return result_;
     }
 
 private:
+    double appearance_score(const std::vector<Candidate>& layout) const {
+        double score = 0;
+        if (options_.seam_score)
+            for (std::size_t i = 0; i < layout.size(); ++i)
+                for (std::size_t j = 0; j < i; ++j) {
+                    const double value = options_.seam_score(layout[i].placement, layout[j].placement);
+                    if (std::isfinite(value)) score += value;
+                }
+        return score;
+    }
+
+    void set_target(cv::Rect2f target) {
+        target_ = target;
+        border_ = {{target.x, target.y}, {target.x + target.width, target.y},
+                   {target.x + target.width, target.y + target.height}, {target.x, target.y + target.height}};
+        border_triangles_ = triangulate(border_);
+    }
+
     bool limit_reached() {
         if (result_.explored_nodes >= options_.max_nodes ||
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count() >= options_.time_limit_seconds) {
@@ -273,6 +306,11 @@ private:
                                     }
                                     if (collision || contact < 1.0) continue;
                                     candidate.score = contact - 0.5 * (candidate.overlap + candidate.outside);
+                                    if (options_.seam_score)
+                                        for (const auto& placed : placed_) {
+                                            const double value = options_.seam_score(candidate.placement, placed.placement);
+                                            if (std::isfinite(value)) candidate.score += value;
+                                        }
                                     candidates.push_back(std::move(candidate));
                                 }
                             }
@@ -288,15 +326,18 @@ private:
     }
 
     void search_beam() {
-        struct Layout { std::vector<Candidate> pieces; double score = 0.0; };
-        constexpr std::size_t beam_width = 32;
+        struct Layout { std::vector<Candidate> pieces; double score = 0.0; cv::Rect2f target; };
+        const std::size_t beam_width = std::max<std::size_t>(32, targets_.size() * 4);
         constexpr std::size_t choices_per_piece = 16;
-        std::vector<Layout> beam(1);
+        std::vector<Layout> beam;
+        for (const auto target : targets_.empty() ? std::vector<cv::Rect2f>{target_} : targets_)
+            beam.push_back({{}, 0.0, target});
         for (std::size_t depth = 0; depth < shapes_.size(); ++depth) {
             std::vector<Layout> next;
             for (const auto& layout : beam) {
                 if (limit_reached()) return;
                 ++result_.explored_nodes;
+                set_target(layout.target);
                 placed_ = layout.pieces;
                 for (const auto& shape : shapes_) {
                     if (std::any_of(placed_.begin(), placed_.end(), [&](const Candidate& p) {
@@ -327,23 +368,30 @@ private:
             if (next.empty()) return;
             if (depth + 1 == shapes_.size()) {
                 for (auto& layout : next) {
+                    set_target(layout.target);
                     placed_ = layout.pieces;
                     layout.score = -layout_error();
+                    if (options_.seam_score)
+                        layout.score += appearance_score(placed_) / std::max(1.0f, target_.width + target_.height);
                 }
             }
             std::stable_sort(next.begin(), next.end(), [](const Layout& a, const Layout& b) { return a.score > b.score; });
             beam.clear();
             std::set<std::vector<long long>> seen;
+            std::map<std::pair<int, int>, std::size_t> size_counts;
             for (auto& layout : next) {
                 std::vector<const PuzzlePlacement*> ordered;
                 for (const auto& p : layout.pieces) ordered.push_back(&p.placement);
                 std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->source_index < b->source_index; });
-                std::vector<long long> key;
+                const auto size_key = std::make_pair(cvRound(layout.target.width * 2), cvRound(layout.target.height * 2));
+                if (!targets_.empty() && depth + 1 < shapes_.size() && size_counts[size_key] >= 4) continue;
+                std::vector<long long> key{size_key.first, size_key.second};
                 for (const auto* p : ordered) {
                     key.insert(key.end(), {static_cast<long long>(p->source_index), std::llround(p->rotation_radians * 1000),
                         std::llround(p->translation.x * 2), std::llround(p->translation.y * 2)});
                 }
                 if (!seen.insert(key).second) continue;
+                ++size_counts[size_key];
                 beam.push_back(std::move(layout));
                 if (beam.size() == beam_width) break;
             }
@@ -351,10 +399,11 @@ private:
                 for (const auto& layout : beam) {
                     if (limit_reached()) return;
                     ++result_.explored_nodes;
+                    set_target(layout.target);
                     placed_ = layout.pieces;
                     // 即使初始拼法尚未通过验收，也先优化所有块的姿态，再执行原阈值验收。
                     improve_solution();
-                    if (result_.solved) return;
+                    if (result_.solved && !options_.seam_score) return;
                 }
             }
         }
@@ -400,7 +449,16 @@ private:
         const double outside_area = static_cast<double>(cv::countNonZero(outside)) / (raster_scale * raster_scale);
         if (coverage < options_.min_coverage || overlap_area > target_.area() * options_.max_overlap_ratio ||
             outside_area > target_.area() * options_.max_outside_ratio) return false;
+        ++result_.evaluated_solutions;
+        const double appearance = appearance_score(placed_);
+        // 不用极小的颜色采样收益换取更多缺口、重叠或框外面积。
+        const double quality = appearance - 0.02 * (overlap_area + outside_area +
+            (1.0 - coverage) * target_.area());
+        if (options_.seam_score && result_.solved && quality <= best_solution_quality_) return true;
+        best_solution_quality_ = quality;
+        result_.seam_score = appearance;
         result_.solved = true;
+        result_.target = target_;
         result_.coverage = coverage;
         result_.overlap_area = overlap_area;
         result_.outside_area = outside_area;
@@ -416,10 +474,11 @@ private:
     }
 
     double layout_error() const {
-        double outside = 0.0, overlap = 0.0, boundary_error = 0.0;
+        double outside = 0.0, overlap = 0.0, boundary_error = 0.0, total_area = 0.0;
         for (std::size_t i = 0; i < placed_.size(); ++i) {
             const auto& candidate = placed_[i];
             const double area = std::abs(cv::contourArea(candidate.placement.points));
+            total_area += area;
             outside += std::max(0.0, area - intersection_area(candidate.triangles, border_triangles_));
             for (std::size_t j = 0; j < i; ++j)
                 overlap += intersection_area(candidate.triangles, placed_[j].triangles);
@@ -431,13 +490,17 @@ private:
             }
         }
         // 同时减少缺口并均衡重叠/框外误差，避免贴着某一项验收上限取解。
-        return (overlap + outside) / target_.area() + boundary_error +
+        const double missing = std::max(0.0, target_.area() - total_area + overlap + outside);
+        const double missing_error = targets_.empty() ? 0.0 :
+            missing / std::max(1e-6, target_.area() * (1.0 - options_.min_coverage));
+        return (overlap + outside) / target_.area() + boundary_error + missing_error +
                std::max(overlap / std::max(1e-6, target_.area() * options_.max_overlap_ratio),
                         outside / std::max(1e-6, target_.area() * options_.max_outside_ratio));
     }
 
     void improve_solution() {
         const auto original = placed_;
+        const auto original_target = target_;
         // 微调是有界的附加步骤；失败时保留已经确认的解，不能破坏回退状态。
         const auto deadline = std::min(start_ + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double>(options_.time_limit_seconds)),
@@ -471,11 +534,25 @@ private:
                         }
                     }
                 }
+                if (!targets_.empty()) {
+                    for (int axis = 0; axis < 2 && within_budget(); ++axis) {
+                        for (const int sign : {-1, 1}) {
+                            auto target = target_;
+                            if (axis == 0) target.width = std::clamp(static_cast<float>(target.width + sign * step), min_size_.width, max_size_.width);
+                            else target.height = std::clamp(static_cast<float>(target.height + sign * step), min_size_.height, max_size_.height);
+                            const auto saved = target_;
+                            set_target(target);
+                            const double error = layout_error();
+                            if (error + 1e-9 < best_error) { best_error = error; improved = true; }
+                            else set_target(saved);
+                        }
+                    }
+                }
                 if (!improved) break;
             }
         }
         // accept_complete 只有通过原始全部阈值才会覆盖 result_，失败时原结果仍有效。
-        if (!accept_complete()) placed_ = original;
+        if (!accept_complete()) { placed_ = original; set_target(original_target); }
     }
 
     bool visit() {
@@ -513,7 +590,10 @@ private:
     std::vector<bool> used_;
     std::vector<Candidate> placed_;
     PuzzleResult result_;
+    double best_solution_quality_ = -std::numeric_limits<double>::infinity();
     bool valid_ = true;
+    std::vector<cv::Rect2f> targets_;
+    cv::Size2f min_size_, max_size_;
 };
 } // namespace
 
@@ -521,12 +601,86 @@ PuzzleResult solve_puzzle(const std::vector<std::vector<cv::Point2f>>& polygons,
                           const cv::Rect2f& target, const PuzzleOptions& options) {
     if (!std::isfinite(target.x) || !std::isfinite(target.y) ||
         !std::isfinite(target.width) || !std::isfinite(target.height) ||
-        target.width <= 0 || target.height <= 0 ||
-        !std::isfinite(options.position_tolerance) || options.position_tolerance < 0 ||
-        !std::isfinite(options.angle_tolerance_degrees) || options.angle_tolerance_degrees < 0 ||
-        !std::isfinite(options.min_coverage) || options.min_coverage <= 0 || options.min_coverage > 1 ||
-        !std::isfinite(options.max_overlap_ratio) || options.max_overlap_ratio < 0 ||
-        !std::isfinite(options.max_outside_ratio) || options.max_outside_ratio < 0 ||
-        !std::isfinite(options.time_limit_seconds) || options.time_limit_seconds <= 0) return {};
+        target.width <= 0 || target.height <= 0 || !valid_options(options)) return {};
     return Search(polygons, target, options).run();
+}
+
+PuzzleResult solve_puzzle_in_range(const std::vector<std::vector<cv::Point2f>>& polygons,
+                                   cv::Point2f origin, cv::Size2f min_size, cv::Size2f max_size,
+                                   const PuzzleOptions& options) {
+    if (!valid_options(options) || !std::isfinite(origin.x) || !std::isfinite(origin.y) ||
+        !std::isfinite(min_size.width) || !std::isfinite(min_size.height) ||
+        !std::isfinite(max_size.width) || !std::isfinite(max_size.height) ||
+        min_size.width <= 0 || min_size.height <= 0 ||
+        max_size.width < min_size.width || max_size.height < min_size.height) return {};
+    double area = 0.0;
+    std::vector<double> edges;
+    std::map<int, double> sums{{0, 0.0}};
+    for (const auto& polygon : polygons) {
+        if (polygon.empty()) continue;
+        if (polygon.size() < 3) return {};
+        for (const auto p : polygon) if (!std::isfinite(p.x) || !std::isfinite(p.y)) return {};
+        area += std::abs(cv::contourArea(polygon));
+        std::vector<double> piece_edges;
+        for (std::size_t i = 0; i < polygon.size(); ++i) {
+            const double length = cv::norm(polygon[(i + 1) % polygon.size()] - polygon[i]);
+            edges.push_back(length);
+            piece_edges.push_back(length);
+        }
+        auto next = sums;
+        for (const auto& item : sums)
+            for (const auto length : piece_edges) {
+                const double sum = item.second + length;
+                if (sum <= std::max(max_size.width, max_size.height) + 2 * options.position_tolerance)
+                    next.emplace(static_cast<int>(std::lround(sum * 2)), sum);
+            }
+        sums = std::move(next);
+    }
+    if (area <= 0 || edges.empty()) return {};
+    const auto feasible_area = [&](double w, double h) {
+        return area >= w * h * options.min_coverage &&
+            area <= w * h * (1.0 + options.max_overlap_ratio + options.max_outside_ratio);
+    };
+    if (area < min_size.area() * options.min_coverage ||
+        area > max_size.area() * (1.0 + options.max_overlap_ratio + options.max_outside_ratio)) return {};
+    std::vector<double> widths{min_size.width, max_size.width}, heights{min_size.height, max_size.height};
+    for (const auto& item : sums) {
+        const double value = item.second, tolerance = 2 * options.position_tolerance;
+        if (value >= min_size.width - tolerance && value <= max_size.width + tolerance)
+            widths.push_back(std::clamp(value, static_cast<double>(min_size.width), static_cast<double>(max_size.width)));
+        if (value >= min_size.height - tolerance && value <= max_size.height + tolerance)
+            heights.push_back(std::clamp(value, static_cast<double>(min_size.height), static_cast<double>(max_size.height)));
+    }
+    struct SizeCandidate { cv::Rect2f target; double error; };
+    std::vector<SizeCandidate> candidates;
+    const auto support = [&](double length) {
+        double distance = length;
+        for (const auto edge : edges) distance = std::min(distance, std::abs(edge - length));
+        return std::max(0.0, 1.0 - distance / std::max(1e-3, options.position_tolerance));
+    };
+    for (const auto w : widths)
+        for (const auto h : heights) {
+            if (!feasible_area(w, h)) continue;
+            const double error = std::abs(area - w * h) / area - 0.02 * (support(w) + support(h));
+            candidates.push_back({cv::Rect2f(origin.x, origin.y, w, h), error});
+        }
+    std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.error < b.error; });
+    std::vector<cv::Rect2f> targets;
+    const double separation = std::max(1.0, 2 * options.position_tolerance);
+    const auto add = [&](cv::Rect2f target) {
+        if (targets.size() >= 16 || !feasible_area(target.width, target.height)) return;
+        for (const auto old : targets)
+            if (std::abs(old.width - target.width) < separation && std::abs(old.height - target.height) < separation) return;
+        targets.push_back(target);
+    };
+    // 首先保留数据支持最强的尺寸，再用面积关系覆盖剩余长宽比，避免仅按面积猜一个尺寸。
+    for (const auto& candidate : candidates) { add(candidate.target); if (targets.size() == 4) break; }
+    for (const int index : {0, 12, 6, 3, 9, 1, 11, 5, 7, 2, 10, 4, 8}) {
+        const double w = min_size.width + (max_size.width - min_size.width) * index / 12.0;
+        const double h = std::clamp(area / w, static_cast<double>(min_size.height), static_cast<double>(max_size.height));
+        add(cv::Rect2f(origin.x, origin.y, w, h));
+    }
+    for (const auto& candidate : candidates) add(candidate.target);
+    if (targets.empty()) return {};
+    return Search(polygons, targets.front(), options, targets, min_size, max_size).run();
 }

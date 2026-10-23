@@ -184,6 +184,78 @@ int main() {
         require(rectangle.solved && rectangle.coverage == 1.0 && rectangle.overlap_area == 0.0 && rectangle.outside_area == 0.0,
                 "exact frame acquired spurious boundary area");
 
+        // 第二题尺寸范围：包括上下限、不同长宽比，以及与 400×240 等面积的 480×200。
+        const cv::Size2f min_size(360, 200), max_size(480, 360);
+        for (const auto size : {cv::Size2f(360, 200), cv::Size2f(480, 360), cv::Size2f(440, 280),
+                                cv::Size2f(480, 200), cv::Size2f(454, 286)}) {
+            const float w = size.width, h = size.height;
+            std::vector<Polygon> varied = {
+                {{0, 0}, {0.25f * w, 0}, {0.65f * w, h}, {0, h}},
+                {{0.25f * w, 0}, {w, 0}, {0.65f * w, h}},
+                {{0.65f * w, h}, {w, 0}, {w, h}}
+            };
+            for (std::size_t i = 0; i < varied.size(); ++i)
+                varied[i] = move(varied[i], 0.53 * (i + 1), {73.0f * i, 91.0f * i});
+            const auto unchanged = varied;
+            const auto automatic = solve_puzzle_in_range(varied, target.tl(), min_size, max_size, options);
+            require(automatic.solved, "automatic rectangle size search failed");
+            require(std::abs(automatic.target.width - w) < 1.0 && std::abs(automatic.target.height - h) < 1.0,
+                    "automatic size inferred wrong aspect ratio");
+            require(automatic.target.width >= min_size.width && automatic.target.width <= max_size.width &&
+                    automatic.target.height >= min_size.height && automatic.target.height <= max_size.height,
+                    "automatic size escaped allowed range");
+            verify(varied, automatic, automatic.target, true);
+            require(varied == unchanged, "automatic size search mutated input");
+        }
+        for (const auto& photo : {photographed_three_third, photographed_four}) {
+            const auto automatic = solve_puzzle_in_range(photo, target.tl(), min_size, max_size);
+            require(automatic.solved && automatic.placements.size() == photo.size(), "automatic photographed puzzle failed");
+            require(automatic.target.width >= min_size.width && automatic.target.width <= max_size.width &&
+                    automatic.target.height >= min_size.height && automatic.target.height <= max_size.height,
+                    "photographed target escaped size range");
+        }
+        require(!solve_puzzle_in_range(pieces, target.tl(), max_size, min_size).solved, "reversed size range accepted");
+        const auto oversized = solve_puzzle_in_range({{{0, 0}, {5000, 0}, {5000, 5000}, {0, 5000}}}, target.tl(), min_size, max_size);
+        require(!oversized.solved && oversized.target.empty(), "out-of-range area reported as solved");
+        // 测试范围允许宽 70–120 mm：这组三块约为 80×70 mm，原 90 mm 下限会排除该摆法。
+        const cv::Size2f test_min_size(280, 200);
+        const std::vector<Polygon> smaller_photographed = {
+            {{707.097656f, 882.831055f}, {356.234283f, 996.587769f}, {669.482056f, 1055.55554f}},
+            {{343.684235f, 860.963013f}, {279.335846f, 726.985657f}, {25.1342506f, 843.123779f}, {170.085495f, 945.220642f}},
+            {{524.183655f, 644.138733f}, {365.614136f, 708.384888f}, {446.3862f, 886.19458f}, {565.477905f, 738.042908f}}
+        };
+        const auto smaller_original = smaller_photographed;
+        const auto smaller = solve_puzzle_in_range(smaller_photographed, target.tl(), test_min_size, max_size);
+        require(smaller.solved && smaller.placements.size() == 3, "smaller photographed puzzle failed in test range");
+        require(std::abs(smaller.target.width - 320) < 8 && std::abs(smaller.target.height - 280) < 8,
+                "smaller photographed puzzle has unexpected dimensions");
+        require(smaller_photographed == smaller_original, "test-range solver changed source polygons");
+        for (const auto& placement : smaller.placements) {
+            require(placement.source_index < smaller_photographed.size(), "test-range source index invalid");
+            const auto transformed = move(smaller_photographed[placement.source_index], placement.rotation_radians, placement.translation);
+            for (std::size_t i = 0; i < transformed.size(); ++i)
+                require(cv::norm(transformed[i] - placement.points[i]) < 0.02, "test-range pose changed shape");
+        }
+        for (const auto size : {cv::Size2f(280, 200), cv::Size2f(320, 280)}) {
+            std::vector<Polygon> split = {
+                {{0, 0}, {size.width, 0}, {0, size.height}},
+                {{size.width, 0}, {size.width, size.height}, {0, size.height}}
+            };
+            const auto automatic = solve_puzzle_in_range(split, target.tl(), test_min_size, max_size, options);
+            require(automatic.solved && std::abs(automatic.target.width - size.width) < 1 &&
+                    std::abs(automatic.target.height - size.height) < 1, "expanded-range size regression failed");
+            verify(split, automatic, automatic.target, true);
+        }
+        for (const auto& photo : {photographed_three, photographed_three_rotated, photographed_three_third, photographed_four}) {
+            const auto automatic = solve_puzzle_in_range(photo, target.tl(), test_min_size, max_size);
+            require(automatic.solved && automatic.placements.size() == photo.size(), "expanded range regressed previous photograph");
+        }
+        auto auto_budget = options;
+        auto_budget.max_nodes = 1;
+        const auto auto_limited = solve_puzzle_in_range(pieces, target.tl(), min_size, max_size, auto_budget);
+        require(!auto_limited.solved && auto_limited.search_limit_reached && auto_limited.explored_nodes == 1,
+                "size candidates did not share search budget");
+
         // 大矩形先以错误朝向放入时，400 × 60 的长条无法继续放置，必须回退。
         const std::vector<Polygon> needs_backtracking = {
             {{0, 0}, {0, 180}, {200, 180}, {200, 0}},

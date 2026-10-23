@@ -108,6 +108,7 @@ piece_data line_process(const cv::Mat& warped, cv::Mat& gray, cv::Mat& blurred, 
 }
 
 void gravity_calculation(piece_data& pieces, cv::Mat& lineImg) {
+    pieces.center_gravity.resize(pieces.pieces_point.size());
     std::vector<std::vector<double>> ci(pieces.pieces_point.size());
     std::vector<std::vector<double>> sx(pieces.pieces_point.size());
     std::vector<std::vector<double>> sy(pieces.pieces_point.size());
@@ -137,6 +138,11 @@ void gravity_calculation(piece_data& pieces, cv::Mat& lineImg) {
             sum_ci += ci[i][j];
             sum_sx += sx[i][j];
             sum_sy += sy[i][j];
+        }
+        // 被 line_process 过滤的小轮廓保留空槽；零面积轮廓也不能计算重心。
+        if (std::abs(sum_ci) < 1e-9) {
+            pieces.center_gravity[i] = cv::Point2f();
+            continue;
         }
         pieces.center_gravity[i].x = sum_sx / (3 * sum_ci);
         pieces.center_gravity[i].y = sum_sy / (3 * sum_ci);

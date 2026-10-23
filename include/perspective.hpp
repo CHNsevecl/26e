@@ -49,6 +49,8 @@ struct rect_position{
 
 std::vector<cv::Point2f> orderPoints(std::vector<cv::Point2f> pts);
 
-void task(const cv::Mat& warped);
+bool task(const cv::Mat& warped);
+// 两个任务只识别、保存图像和机械目标，不打开串口；成功返回 true。
+bool task2(const cv::Mat& warped);
 cv::Mat a4_perspective_transform(const cv::Mat& img);
 
