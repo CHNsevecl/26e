@@ -34,7 +34,7 @@ bool task(const cv::Mat& warped) {
     const auto solve_start = cv::getTickCount();
     const PuzzleResult result = solve_puzzle_in_range(pieces.pieces_point, target_origin, min_size, max_size, options);
     const double solve_time_ms = (cv::getTickCount() - solve_start) * 1000.0 / cv::getTickFrequency();
-    const double machine_gap_mm = 5.0; // 机械摆放时，拼块边缘之间至少留 1 cm。
+    const double machine_gap_mm = 3.0; // 机械摆放时，拼块边缘之间至少留 1 cm。
     const MachineResult result_machine = make_machine_result(
         result, machine_gap_mm * scale,
         cv::Rect2f(0, 0, papers_width * scale, papers_height * scale));
@@ -143,7 +143,9 @@ bool task(const cv::Mat& warped) {
 
 bool task2(const cv::Mat& warped) {
     CardPuzzleOptions options;
-    options.gap_mm = 5.0; // 扑克牌机械目标的边缘最小间距，单位 mm。
+    options.solver.time_limit_seconds = 30.0; // 扑克牌候选和花纹比较共用的求解预算。
+    options.require_corner_indices = true;
+    options.gap_mm = 3.0; // 扑克牌机械目标的边缘最小间距，单位 mm。
     // 已知完整牌尺寸时填写，例如 options.target_size_mm = {63.0f, 88.0f};
     // 保持为零则根据碎片面积、边长和 min_aspect/max_aspect 估计。
     const CardPuzzleResult card = solve_card_puzzle(warped, options);
@@ -172,7 +174,9 @@ bool task2(const cv::Mat& warped) {
         report << "recognized" << static_cast<int>(card.recognition.ready)
                << "solved" << static_cast<int>(result.solved)
                << "error" << card.error
-               << "matching_method" << (options.use_white_border ? "geometry_seams_and_white_border_without_reference" :
+               << "matching_method" << ((options.use_layout_pattern || options.require_corner_indices) ?
+                                        "geometry_seams_indices_and_face_without_reference" :
+                                       (options.use_white_border || options.use_rounded_corners) ? "geometry_seams_and_card_frame_without_reference" :
                                         "geometry_and_seam_continuity_without_reference")
                << "contour_model" << "fitted_edges_with_physical_rounded_mask"
                << "unique_solution_verified" << 0
@@ -181,7 +185,21 @@ bool task2(const cv::Mat& warped) {
                << "explored_nodes" << static_cast<double>(result.explored_nodes)
                << "evaluated_solutions" << static_cast<double>(result.evaluated_solutions)
                << "white_border_prior" << static_cast<int>(options.use_white_border)
+               << "rounded_corner_prior" << static_cast<int>(options.use_rounded_corners)
+               << "require_corner_indices" << static_cast<int>(options.require_corner_indices)
+               << "solver_time_limit_seconds" << options.solver.time_limit_seconds
+               << "solver_max_nodes" << static_cast<double>(options.solver.max_nodes)
                << "boundary_score" << result.boundary_score
+               << "corner_index_first" << static_cast<int>(card.layout.first_index)
+               << "corner_index_opposite" << static_cast<int>(card.layout.opposite_index)
+               << "corner_indices_verified" << static_cast<int>(card.layout.indices_verified)
+               << "corner_index_match" << card.layout.index_match
+               << "corner_rank_match" << card.layout.rank_match
+               << "corner_suit_match" << card.layout.suit_match
+               << "corner_index_aspect_ratio" << card.layout.index_aspect_ratio
+               << "face_pattern_match" << card.layout.pattern_match
+               << "layout_score" << result.layout_score
+               << "layout_accepted" << static_cast<int>(result.layout_accepted)
                << "seam_score" << result.seam_score
                << "coverage" << result.coverage
                << "overlap_area_pixels" << result.overlap_area
@@ -195,12 +213,14 @@ bool task2(const cv::Mat& warped) {
         const std::string filename = "task2_piece_" + std::to_string(i);
         cv::imwrite(filename + ".png", fragment.image);
         cv::imwrite(filename + "_mask.png", fragment.mask);
+        cv::imwrite(filename + "_texture_mask.png", fragment.texture_mask);
         if (report.isOpened())
             report << "{" << "source_index" << static_cast<int>(i)
                    << "points" << pieces_origin.pieces_point[i]
                    << "center_gravity" << pieces_origin.center_gravity[i]
                    << "bounds" << fragment.bounds
-                   << "image" << filename + ".png" << "mask" << filename + "_mask.png" << "}";
+                   << "image" << filename + ".png" << "mask" << filename + "_mask.png"
+                   << "texture_mask" << filename + "_texture_mask.png" << "}";
     }
     if (report.isOpened()) {
         report << "]" << "placements";
@@ -220,6 +240,8 @@ bool task2(const cv::Mat& warped) {
               << result.target.width/scale << " × " << result.target.height/scale
               << " mm，接缝图案评分 " << result.seam_score
               << "，机械最小间距 " << result_machine.minimum_gap_pixels/scale << " mm" << std::endl;
+    std::cout << "角标对角校验通过，角标匹配 " << card.layout.index_match
+              << "，整牌图案匹配 " << card.layout.pattern_match << std::endl;
     std::cout << "无参考图的接缝匹配不保证唯一解，牌面预览保存在 task2_result.png" << std::endl;
     return save_machine_targets(pieces_origin, result_machine, "task2");
 }

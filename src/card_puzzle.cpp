@@ -67,7 +67,7 @@ cv::Mat estimate_background(const cv::Mat& image, const cv::Mat& gray, double se
 
 // 从实体轮廓的长直边拟合几何模型；短圆弧不作为新的切割边。
 // 原始掩膜仍保留圆角，几何模型只供求解器使用。
-std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) {
+std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour,bool recover_short_cuts=false) {
     const double perimeter=cv::arcLength(contour,true);
     std::vector<cv::Point> seed;
     cv::approxPolyDP(contour,seed,perimeter*0.01,true);
@@ -107,15 +107,9 @@ std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) 
     }
     const std::vector<cv::Point2f> fallback(seed.begin(),seed.end());
     if (seed.size()<3) return fallback;
-    if (seed.size()==4) {
-        bool regular_rectangle=true;
-        for (std::size_t i=0;i<4;++i) {
-            const cv::Point2f before=seed[(i+3)%4]-seed[i],after=seed[(i+1)%4]-seed[i];
-            if (std::abs(before.dot(after))>std::sin(2*CV_PI/180)*cv::norm(before)*cv::norm(after))
-                regular_rectangle=false;
-        }
-        if (regular_rectangle) return fallback;
-    }
+    // Near-right-angle seed corners can lie inside a rounded physical edge.
+    // Fit the supported sides before deciding to retain an already-straight
+    // polygon; a tiny change in angle must not bypass rounded-corner recovery.
     std::vector<std::size_t> indices;
     for (const auto& corner : seed) {
         const auto found=std::find(contour.begin(),contour.end(),corner);
@@ -123,6 +117,8 @@ std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) 
         indices.push_back(found-contour.begin());
     }
     std::vector<cv::Vec4f> lines;
+    std::vector<std::vector<cv::Point2f>> line_supports;
+    std::vector<std::pair<std::size_t,std::size_t>> line_arcs;
     bool all_straight=true;
     for (std::size_t k=0;k<seed.size();++k) {
         const cv::Point2f a=seed[k],b=seed[(k+1)%seed.size()];
@@ -144,7 +140,8 @@ std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) 
         if (curvature>1.2) all_straight=false;
         // 真正的短直边仍保留。仅合并长度较短、明显弯曲的圆角过渡。
         const double corner_curvature=std::clamp(0.05*length,0.65,1.2);
-        if (length<0.08*perimeter && curvature>corner_curvature) continue;
+        if (!recover_short_cuts && length<0.08*perimeter && curvature>corner_curvature) continue;
+
         if (support.size()<8) support=arc;
         if (support.size()<2) return fallback;
         cv::Vec4f line;
@@ -161,10 +158,68 @@ std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) 
                 if (errors[j]<=threshold) core.push_back(support[j]);
             if (core.size()>=6) cv::fitLine(core,line,cv::DIST_L2,0,0.01,0.01);
         }
-        if (std::abs(line[0]*direction.x+line[1]*direction.y)<std::cos(12*CV_PI/180)) return fallback;
+        const bool aligned=std::abs(line[0]*direction.x+line[1]*direction.y)>=std::cos(12*CV_PI/180);
+        if (recover_short_cuts && length<0.08*perimeter) {
+            std::vector<double> arc_errors;
+            for (const auto point : arc)
+                arc_errors.push_back(std::abs((point.x-line[2])*line[1]-(point.y-line[3])*line[0]));
+            std::sort(arc_errors.begin(),arc_errors.end());
+            // Rounded endpoints can bend the seed chord of a real straight cut.
+            // Use its actual line support before discarding the entire segment;
+            // unstable short flower arcs must not abort all the long-edge fits.
+            if (!aligned || (curvature>corner_curvature &&
+                (length<8*scale || arc_errors[arc_errors.size()*4/5]>corner_curvature))) continue;
+        } else if (!aligned) return fallback;
         lines.push_back(line);
+        line_supports.push_back(std::move(support));
+        line_arcs.emplace_back(k,k);
     }
     if (lines.size()==seed.size() && all_straight) return fallback;
+    // Discarded curved printing can leave two parts of the same straight cut.
+    // Merge only when both sets of actual contour samples support one line;
+    // offset parallel edges and straight concave cuts must stay separate.
+    bool joined=true;
+    while (joined && lines.size()>3) {
+        joined=false;
+        for (std::size_t i=0;i<lines.size();++i) {
+            const auto previous=(i+lines.size()-1)%lines.size();
+            const auto& a=lines[previous];
+            const auto& b=lines[i];
+            if (std::abs(a[0]*b[1]-a[1]*b[0])>std::sin(3*CV_PI/180)) continue;
+            auto support=line_supports[previous];
+            support.insert(support.end(),line_supports[i].begin(),line_supports[i].end());
+            cv::Vec4f common;
+            cv::fitLine(support,common,cv::DIST_L2,0,0.01,0.01);
+            std::vector<double> errors;
+            for (const auto point : support)
+                errors.push_back(std::abs((point.x-common[2])*common[1]-(point.y-common[3])*common[0]));
+            std::sort(errors.begin(),errors.end());
+            if (errors[errors.size()*9/10]>1.5 || errors[errors.size()*19/20]>3) continue;
+            // This repair is for an inward curved print notch. Outward spurs
+            // retain the existing geometry-only opening fallback instead.
+            const auto moments=cv::moments(contour);
+            const cv::Point2f center(moments.m10/moments.m00,moments.m01/moments.m00);
+            const double toward_center=(center.x-common[2])*common[1]-(center.y-common[3])*common[0];
+            if (std::abs(toward_center)<1e-3) continue;
+            double deepest=0,outward=0;
+            for (std::size_t j=(line_arcs[previous].second+1)%seed.size();;j=(j+1)%seed.size()) {
+                const auto point=seed[j];
+                const double depth=((point.x-common[2])*common[1]-(point.y-common[3])*common[0])*
+                                   (toward_center>0 ? 1 : -1);
+                deepest=std::max(deepest,depth);outward=std::min(outward,depth);
+                if (j==line_arcs[i].first) break;
+            }
+            if (deepest<2*scale || outward<-2) continue;
+            line_arcs[previous].second=line_arcs[i].second;
+            lines[previous]=common;
+            line_supports[previous]=std::move(support);
+            lines.erase(lines.begin()+i);
+            line_supports.erase(line_supports.begin()+i);
+            line_arcs.erase(line_arcs.begin()+i);
+            joined=true;
+            break;
+        }
+    }
     if (lines.size()<3) return fallback;
     std::vector<cv::Point2f> polygon;
     for (std::size_t i=0;i<lines.size();++i) {
@@ -179,9 +234,47 @@ std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) 
             std::abs(cv::pointPolygonTest(contour,corner,true))>std::min(8.0*scale,perimeter*0.04)) return fallback;
         polygon.push_back(corner);
     }
-    const double ratio=std::abs(cv::contourArea(polygon)/cv::contourArea(contour));
-    if (ratio<0.95 || ratio>1.05 || cv::contourArea(polygon,true)*cv::contourArea(contour,true)<=0) return fallback;
+    const double physical_area=std::abs(cv::contourArea(contour));
+    const double model_area=std::abs(cv::contourArea(polygon));
+    // A contour through pixel centers has a half-pixel boundary uncertainty.
+    // Apply that area allowance only to the supported-cut recovery fallback;
+    // stable models and the final puzzle coverage/overlap checks stay unchanged.
+    const double boundary_area=recover_short_cuts ? perimeter*0.5 : 0;
+    if (model_area<0.95*physical_area || model_area>1.05*physical_area+boundary_area ||
+        cv::contourArea(polygon,true)*cv::contourArea(contour,true)<=0) return fallback;
     return polygon;
+}
+
+// Only the geometry estimate is cleaned. Keep the physical contour, texture,
+// masks and pickup centroid unchanged when a small attached spur adds vertices.
+std::vector<cv::Point2f> fit_piece_model(const std::vector<cv::Point>& contour) {
+    auto best=fit_piece_edges(contour);
+    if (best.size()<=4 || cv::isContourConvex(best)) return best;
+    const auto bounds=cv::boundingRect(contour);
+    const int padding=4;
+    cv::Mat mask=cv::Mat::zeros(bounds.height+2*padding,bounds.width+2*padding,CV_8UC1);
+    std::vector<cv::Point> local;
+    for (const auto point : contour) local.push_back(point-bounds.tl()+cv::Point(padding,padding));
+    cv::drawContours(mask,std::vector<std::vector<cv::Point>>{local},0,cv::Scalar(255),cv::FILLED);
+    const double area=std::abs(cv::contourArea(contour));
+    for (const int diameter : {3,5,7}) {
+        cv::Mat cleaned;
+        cv::morphologyEx(mask,cleaned,cv::MORPH_OPEN,
+            cv::getStructuringElement(cv::MORPH_ELLIPSE,{diameter,diameter}));
+        std::vector<std::vector<cv::Point>> components;
+        cv::findContours(cleaned,components,cv::RETR_EXTERNAL,cv::CHAIN_APPROX_NONE);
+        if (components.size()!=1 || std::abs(cv::contourArea(components.front()))<0.98*area) continue;
+        for (auto& point : components.front()) point+=bounds.tl()-cv::Point(padding,padding);
+        auto model=fit_piece_edges(components.front());
+        if (model.size()>=3 && model.size()<best.size()) best=std::move(model);
+    }
+    if (best.size()>4 && !cv::isContourConvex(best)) {
+        // Retain every stable existing model. Retry only unresolved notched
+        // contours with straight-support recovery for short seed segments.
+        auto recovered=fit_piece_edges(contour,true);
+        if (recovered.size()>=3 && recovered.size()<best.size()) best=std::move(recovered);
+    }
+    return best;
 }
 
 // 黑色图案恰好碰到切边时会表现成缺口。仅在缺口比边外的黑纸明显更黑时补回；
@@ -271,7 +364,7 @@ bool sample(const CardRecognition& recognition, const PuzzlePlacement& placement
     const auto original = rotate(point-placement.translation,-placement.rotation_radians);
     const cv::Point local(cvRound(original.x)-fragment.bounds.x,cvRound(original.y)-fragment.bounds.y);
     if (local.x < 0 || local.y < 0 || local.x >= fragment.mask.cols || local.y >= fragment.mask.rows ||
-        !fragment.mask.at<uchar>(local)) return false;
+        !(fragment.texture_mask.empty() ? fragment.mask : fragment.texture_mask).at<uchar>(local)) return false;
     color = fragment.image.at<cv::Vec3b>(local);
     return true;
 }
@@ -319,6 +412,49 @@ std::vector<std::vector<double>> border_evidence(const CardRecognition& recognit
     return evidence;
 }
 
+// A physical rounded corner removes paper near the intersection of two fitted
+// straight edges. Blank card interiors cannot provide this perimeter evidence.
+std::vector<std::vector<double>> corner_evidence(const CardRecognition& recognition) {
+    std::vector<std::vector<double>> evidence;
+    const double radius=3.0*scale;
+    for (std::size_t id=0;id<recognition.fragments.size();++id) {
+        const auto& fragment=recognition.fragments[id];
+        const auto& polygon=recognition.pieces.pieces_point[id];
+        std::vector<double> missing;
+        for (std::size_t i=0;i<polygon.size();++i) {
+            const auto vertex=polygon[i];
+            const cv::Point2f incoming=vertex-polygon[(i+polygon.size()-1)%polygon.size()];
+            const cv::Point2f outgoing=polygon[(i+1)%polygon.size()]-vertex;
+            const double lengths=cv::norm(incoming)*cv::norm(outgoing);
+            const double turn=incoming.x*outgoing.y-incoming.y*outgoing.x;
+            // Original card corners are convex and approximately perpendicular.
+            // Blur at a sharp acute cut must not count as a rounded outer corner.
+            if (lengths<1 || turn*cv::contourArea(polygon,true)<=0 ||
+                std::abs(incoming.dot(outgoing))>std::sin(15*CV_PI/180)*lengths) {
+                missing.push_back(0);
+                continue;
+            }
+            int inside=0,absent=0;
+            for (int y=static_cast<int>(vertex.y-radius);y<=vertex.y+radius;++y)
+                for (int x=static_cast<int>(vertex.x-radius);x<=vertex.x+radius;++x) {
+                    const cv::Point2f point(x+0.5f,y+0.5f);
+                    if (cv::norm(point-vertex)>radius || cv::pointPolygonTest(polygon,point,false)<0) continue;
+                    ++inside;
+                    const auto local=cv::Point(x,y)-fragment.bounds.tl();
+                    if (local.x<0 || local.y<0 || local.x>=fragment.mask.cols || local.y>=fragment.mask.rows ||
+                        !fragment.mask.at<uchar>(local)) ++absent;
+                }
+            missing.push_back(inside ? static_cast<double>(absent)/inside : 0);
+        }
+        auto ordered=missing;
+        std::sort(ordered.begin(),ordered.end());
+        const double median=(ordered[ordered.size()/2]+ordered[(ordered.size()-1)/2])*0.5;
+        for (auto& value : missing) value=std::max(0.0,value-median-0.08);
+        evidence.push_back(std::move(missing));
+    }
+    return evidence;
+}
+
 cv::Mat render(const CardRecognition& recognition, const std::vector<PuzzlePlacement>& placements) {
     cv::Mat canvas = cv::Mat::zeros(papers_height*scale,papers_width*scale,CV_8UC3);
     for (const auto& placement : placements) {
@@ -328,7 +464,8 @@ cv::Mat render(const CardRecognition& recognition, const std::vector<PuzzlePlace
                                    s,c,s*fragment.bounds.x+c*fragment.bounds.y+placement.translation.y);
         cv::Mat image,mask;
         cv::warpAffine(fragment.image,image,transform,canvas.size(),cv::INTER_LINEAR);
-        cv::warpAffine(fragment.mask,mask,transform,canvas.size(),cv::INTER_NEAREST);
+        cv::warpAffine(fragment.texture_mask.empty() ? fragment.mask : fragment.texture_mask,
+                       mask,transform,canvas.size(),cv::INTER_NEAREST);
         image.copyTo(canvas,mask);
     }
     return canvas;
@@ -387,7 +524,7 @@ CardRecognition recognize_card_pieces(const cv::Mat& warped, const CardPuzzleOpt
     recognition.debug_image=warped.clone();
     auto& pieces=recognition.pieces;
     for (const auto& contour : contours) {
-        const auto polygon=fit_piece_edges(contour);
+        const auto polygon=fit_piece_model(contour);
         if (polygon.size()<3 || std::abs(cv::contourArea(polygon))<min_area) continue;
         const auto moments=cv::moments(contour);
         if (std::abs(moments.m00)<1e-6) continue;
@@ -418,7 +555,32 @@ CardRecognition recognize_card_pieces(const cv::Mat& warped, const CardPuzzleOpt
         cv::drawContours(full_mask,std::vector<std::vector<cv::Point>>{contour},0,cv::Scalar(255),cv::FILLED);
         cv::bitwise_or(recognition.foreground_mask,full_mask,recognition.foreground_mask);
         fragment.mask=full_mask(fragment.bounds).clone();
-        warped(fragment.bounds).copyTo(fragment.image,fragment.mask);
+        fragment.image=warped(fragment.bounds).clone();
+        fragment.texture_mask=fragment.mask.clone();
+        std::vector<cv::Point> local_model;
+        for (const auto point : polygon) local_model.emplace_back(cvRound(point.x)-fragment.bounds.x,
+                                                                  cvRound(point.y)-fragment.bounds.y);
+        cv::Mat model_mask=cv::Mat::zeros(fragment.mask.size(),CV_8UC1);
+        cv::fillPoly(model_mask,std::vector<std::vector<cv::Point>>{local_model},cv::Scalar(255));
+        // Extend only texture to the fitted cut line. Leave every vertex region
+        // (including original rounded corners), physical mask and pickup center intact.
+        for (const auto point : local_model) cv::circle(model_mask,point,4*scale,cv::Scalar(0),cv::FILLED);
+        cv::bitwise_or(fragment.texture_mask,model_mask,fragment.texture_mask);
+        std::vector<int> whites;
+        for (int y=0;y<fragment.image.rows;y+=3)
+            for (int x=0;x<fragment.image.cols;x+=3)
+                if (fragment.mask.at<uchar>(y,x)) {
+                    const auto color=fragment.image.at<cv::Vec3b>(y,x);
+                    whites.push_back(std::min({color[0],color[1],color[2]}));
+                }
+        std::sort(whites.begin(),whites.end());
+        const double white=whites.empty() ? 255 : std::max(80,whites[whites.size()*9/10]);
+        fragment.normalized_ink=cv::Mat(fragment.image.size(),CV_32FC1);
+        for (int y=0;y<fragment.image.rows;++y)
+            for (int x=0;x<fragment.image.cols;++x) {
+                const auto color=fragment.image.at<cv::Vec3b>(y,x);
+                fragment.normalized_ink.at<float>(y,x)=std::clamp(1-std::min({color[0],color[1],color[2]})/white,0.0,1.0);
+            }
         recognition.fragments.push_back(std::move(fragment));
         cv::polylines(recognition.debug_image,std::vector<std::vector<cv::Point>>{contour},true,{0,255,0},1,cv::LINE_AA);
         for (std::size_t j=0;j<polygon.size();++j)
@@ -505,9 +667,10 @@ CardPuzzleResult solve_card_puzzle(const cv::Mat& warped,const CardPuzzleOptions
         scores.emplace(key,score);
         return score;
     };
-    if (options.use_white_border) {
+    if (options.use_white_border || options.use_rounded_corners) {
         const auto evidence=border_evidence(card.recognition);
-        solver.boundary_score=[&, evidence](const PuzzlePlacement& placement,const cv::Rect2f& target) {
+        const auto corners=corner_evidence(card.recognition);
+        solver.boundary_score=[&, evidence, corners](const PuzzlePlacement& placement,const cv::Rect2f& target) {
             double score=0;
             const double tolerance=solver.position_tolerance+1;
             for (std::size_t i=0;i<placement.points.size();++i) {
@@ -516,11 +679,23 @@ CardPuzzleResult solve_card_puzzle(const cv::Mat& warped,const CardPuzzleOptions
                     (std::abs(p.x-target.br().x)<=tolerance && std::abs(q.x-target.br().x)<=tolerance) ||
                     (std::abs(p.y-target.y)<=tolerance && std::abs(q.y-target.y)<=tolerance) ||
                     (std::abs(p.y-target.br().y)<=tolerance && std::abs(q.y-target.br().y)<=tolerance);
-                if (on_border) score+=cv::norm(q-p)*evidence[placement.source_index][i];
+                if (options.use_white_border && on_border)
+                    score+=cv::norm(q-p)*evidence[placement.source_index][i];
+                const double distance=std::min({cv::norm(p-target.tl()),cv::norm(p-target.br()),
+                    cv::norm(p-cv::Point2f(target.x+target.width,target.y)),
+                    cv::norm(p-cv::Point2f(target.x,target.y+target.height))});
+                if (options.use_rounded_corners)
+                    score+=300*corners[placement.source_index][i]*(1-std::min(2.0,distance/(2*tolerance)));
             }
             return score;
         };
     }
+    if (options.use_layout_pattern || options.require_corner_indices)
+        solver.layout_score=[&](const std::vector<PuzzlePlacement>& placements,const cv::Rect2f& target) {
+            const auto layout=evaluate_card_layout(card.recognition,placements,target);
+            return PuzzleLayoutScore{options.use_layout_pattern ? layout.score : 0,
+                                     !options.require_corner_indices || layout.indices_verified};
+        };
     const cv::Point2f origin(240,240);
     if (options.target_size_mm.area()>0) {
         card.result=solve_puzzle(card.recognition.pieces.pieces_point,
@@ -539,14 +714,164 @@ CardPuzzleResult solve_card_puzzle(const cv::Mat& warped,const CardPuzzleOptions
         card.error=card.result.search_limit_reached ? "扑克牌复原搜索达到上限" : "未找到满足几何约束的完整牌面";
         return card;
     }
+    card.layout=evaluate_card_layout(card.recognition,card.result.placements,card.result.target);
+    if (options.require_corner_indices && !card.layout.indices_verified) {
+        card.assembled_image=render(card.recognition,card.result.placements);
+        card.error="数字/字母角标未通过对角位置与相反方向校验，请重新拍照";
+        card.result.solved=false;
+        return card;
+    }
     // 轮廓模型为圆角使用了直边交点；机械搬运仍跟随实体纸片的面积重心。
     for (auto& placement : card.result.placements)
         placement.center_gravity=rotate(card.recognition.pieces.center_gravity[placement.source_index],
                                         placement.rotation_radians)+placement.translation;
-    card.result_machine=make_machine_result(card.result,options.gap_mm*scale,
-        {0,0,papers_width*scale,papers_height*scale});
+    // Keep every expanded card piece above the actual warped A4 midpoint.
+    // A 2 mm inset also leaves room for rasterization and contour-fit error.
+    const cv::Rect2f machine_workspace(0,0,static_cast<float>(warped.cols),
+                                      warped.rows*0.5f-2*scale);
+    card.result_machine=make_machine_result(card.result,options.gap_mm*scale,machine_workspace);
     card.assembled_image=render(card.recognition,card.result.placements);
     if (card.result_machine.ready) card.machine_image=render(card.recognition,card.result_machine.placements);
     else card.error=card.result_machine.error;
     return card;
+}
+
+namespace {
+struct IndexSignature {
+    bool found=false;
+    cv::Mat rank,suit;
+    double aspect=0;
+};
+
+cv::Mat normalized_symbol(const cv::Mat& symbol,cv::Size size) {
+    cv::Mat result=cv::Mat::zeros(size,CV_32FC1),resized;
+    const double factor=std::min((size.width-4.0)/symbol.cols,(size.height-4.0)/symbol.rows);
+    cv::resize(symbol,resized,{std::max(1,cvRound(symbol.cols*factor)),std::max(1,cvRound(symbol.rows*factor))});
+    resized.convertTo(resized,CV_32F,symbol.depth()==CV_32F ? 1 : 1.0/255);
+    resized.copyTo(result(cv::Rect((size.width-resized.cols)/2,(size.height-resized.rows)/2,resized.cols,resized.rows)));
+    cv::GaussianBlur(result,result,{0,0},0.7);
+    // Compare glyph shape independently of local printed-ink contrast.
+    cv::normalize(result,result,1.0,0,cv::NORM_INF);
+    return result;
+}
+
+// Locate the rank-over-small-suit stack, without a font model or a hard-coded
+// card value. Two-digit ranks may contain several connected components.
+IndexSignature index_signature(const cv::Mat& patch,bool separate_thin_lines=false) {
+    cv::Mat binary,labels,stats,centers;
+    const double sampling=patch.cols/24.0;
+    // Estimate local paper and ink contrast from the rank column, excluding
+    // the neighboring large pip. Weak connected strokes still define the box.
+    std::vector<float> levels;
+    for (int y=0;y<cvRound(30*sampling);++y)
+        for (int x=0;x<cvRound(patch.cols*0.8);++x) levels.push_back(patch.at<float>(y,x));
+    std::sort(levels.begin(),levels.end());
+    const double paper=levels[levels.size()/5],peak=levels[levels.size()*98/100];
+    if (peak-paper<0.10) return {};
+    cv::Mat contrast;
+    cv::subtract(patch,paper,contrast);
+    cv::max(contrast,0,contrast);
+    contrast/=peak-paper;
+    cv::min(contrast,1,contrast);
+    cv::compare(contrast,0.25,binary,cv::CMP_GT);
+    // Thin fitted-cut gaps and court-frame lines must not merge into the small suit.
+    // If no stack can be found, also separate thin bridges from the rank: a
+    // blurred Q tail can touch the neighboring court frame. Keep the original
+    // contrast image for comparing glyphs, including their thin strokes.
+    cv::Mat separation=separate_thin_lines ? binary : binary.rowRange(cvRound(30*sampling),binary.rows);
+    cv::morphologyEx(separation,separation,cv::MORPH_OPEN,
+                    cv::getStructuringElement(cv::MORPH_ELLIPSE,{cvRound(2*sampling)|1,cvRound(2*sampling)|1}));
+    const int count=cv::connectedComponentsWithStats(binary,labels,stats,centers);
+    IndexSignature best;
+    int best_area=0;
+    for (int suit=1;suit<count;++suit) {
+        const cv::Rect sb(stats.at<int>(suit,cv::CC_STAT_LEFT),stats.at<int>(suit,cv::CC_STAT_TOP),
+                          stats.at<int>(suit,cv::CC_STAT_WIDTH),stats.at<int>(suit,cv::CC_STAT_HEIGHT));
+        const int suit_area=stats.at<int>(suit,cv::CC_STAT_AREA);
+        if (suit_area<7*sampling*sampling || sb.width<4*sampling || sb.width>15*sampling ||
+            sb.height<5*sampling || sb.height>15*sampling || sb.x<sampling ||
+            sb.br().x>=patch.cols-sampling || sb.y<22*sampling || sb.y>43*sampling) continue;
+        cv::Rect rb;
+        int rank_area=0;
+        for (int rank=1;rank<count;++rank) {
+            const cv::Rect box(stats.at<int>(rank,cv::CC_STAT_LEFT),stats.at<int>(rank,cv::CC_STAT_TOP),
+                               stats.at<int>(rank,cv::CC_STAT_WIDTH),stats.at<int>(rank,cv::CC_STAT_HEIGHT));
+            const int area=stats.at<int>(rank,cv::CC_STAT_AREA);
+            if (area<2*sampling*sampling || box.y<sampling || box.br().y>=sb.y || box.x<sampling ||
+                box.br().x>=patch.cols-sampling ||
+                std::abs(centers.at<double>(rank,0)-centers.at<double>(suit,0))>7*sampling) continue;
+            rb=rank_area ? rb|box : box;
+            rank_area+=area;
+        }
+        if (rank_area<10*sampling*sampling || rb.y>15*sampling || rb.height<10*sampling ||
+            rb.height>29*sampling || rb.width<4*sampling || rb.width>21*sampling ||
+            sb.y-rb.br().y>14*sampling || rb.width>rb.height*2.2 || rank_area+suit_area<=best_area) continue;
+        best.found=true;
+        best.aspect=static_cast<double>(rb.width)/rb.height;
+        best.rank=normalized_symbol(contrast(rb),{24,32});
+        best.suit=normalized_symbol(contrast(sb),{24,24});
+        best_area=rank_area+suit_area;
+    }
+    if (!best.found && !separate_thin_lines) return index_signature(patch,true);
+    return best;
+}
+
+double ink_agreement(const cv::Mat& a,const cv::Mat& b) {
+    const double sum=cv::sum(a)[0]+cv::sum(b)[0];
+    if (sum<1) return 0;
+    cv::Mat common;
+    cv::min(a,b,common);
+    return 2*cv::sum(common)[0]/sum;
+}
+}
+
+CardLayoutEvidence evaluate_card_layout(const CardRecognition& recognition,
+    const std::vector<PuzzlePlacement>& placements,const cv::Rect2f& target) {
+    CardLayoutEvidence result;
+    if (target.width<=0 || target.height<=0) return result;
+    // A small face canvas makes complete-layout comparisons cheap. Whiteness is
+    // normalized per physical fragment, so illumination does not dominate ink.
+    const cv::Size size(240,360);
+    cv::Mat face=cv::Mat::zeros(size,CV_32FC1);
+    const double sx=size.width/target.width,sy=size.height/target.height;
+    for (const auto& placement : placements) {
+        const auto& fragment=recognition.fragments.at(placement.source_index);
+        const double c=std::cos(placement.rotation_radians),s=std::sin(placement.rotation_radians);
+        const cv::Matx23d transform(sx*c,-sx*s,sx*(c*fragment.bounds.x-s*fragment.bounds.y+placement.translation.x-target.x),
+                                   sy*s,sy*c,sy*(s*fragment.bounds.x+c*fragment.bounds.y+placement.translation.y-target.y));
+        cv::Mat ink,mask;
+        cv::warpAffine(fragment.normalized_ink,ink,transform,size,cv::INTER_LINEAR);
+        cv::warpAffine(fragment.texture_mask.empty() ? fragment.mask : fragment.texture_mask,
+                       mask,transform,size,cv::INTER_NEAREST);
+        ink.copyTo(face,mask);
+    }
+    const cv::Rect index_zone(4,6,48,106);
+    cv::Mat opposite;
+    cv::flip(face(cv::Rect(size.width-index_zone.br().x,size.height-index_zone.br().y,
+                           index_zone.width,index_zone.height)),opposite,-1);
+    const auto first=index_signature(face(index_zone)),second=index_signature(opposite);
+    result.first_index=first.found;
+    result.opposite_index=second.found;
+    if (first.found && second.found) {
+        const double rank=ink_agreement(first.rank,second.rank),suit=ink_agreement(first.suit,second.suit);
+        result.rank_match=rank;result.suit_match=suit;
+        result.index_match=0.65*rank+0.35*suit;
+        const double aspect=first.aspect/second.aspect;
+        result.index_aspect_ratio=aspect;
+        result.indices_verified=rank>=0.65 && suit>=0.65 && aspect>=0.6 && aspect<=1.65;
+    }
+    // Number-card pips and the ace motif often have bilateral structure; court
+    // figures commonly repeat after a half-turn. Compare both, excluding indices.
+    cv::Mat body,flipped;
+    cv::resize(face(cv::Rect(46,10,148,340)),body,{74,170},0,0,cv::INTER_AREA);
+    cv::subtract(body,0.2,body);
+    cv::max(body,0,body);body/=0.6;cv::min(body,1,body);
+    cv::GaussianBlur(body,body,{0,0},0.8);
+    for (const int axis : {-1,1}) {
+        cv::flip(body,flipped,axis);
+        result.pattern_match=std::max(result.pattern_match,ink_agreement(body,flipped));
+    }
+    result.score=700*result.index_match+(result.indices_verified ? 250 : 0)+200*result.pattern_match;
+    if (first.found!=second.found) result.score-=150;
+    return result;
 }

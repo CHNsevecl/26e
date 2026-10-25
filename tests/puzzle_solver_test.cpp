@@ -297,6 +297,19 @@ int main() {
         require(border_result.boundary_score>999,"boundary-only appearance ignored in candidate ranking");
         require(border_result.seam_score==0,"boundary appearance mixed into seam score");
 
+        // A verified layout takes priority even when its numeric appearance is lower.
+        auto layout_options=exact_options();
+        layout_options.layout_score=[](const std::vector<PuzzlePlacement>& placements,const cv::Rect2f&) {
+            bool accepted=false;
+            for (const auto& p : placements) if (p.source_index==0)
+                accepted=std::cos(p.rotation_radians-CV_PI)>0.999;
+            return PuzzleLayoutScore{accepted ? -1000.0 : 1000.0,accepted};
+        };
+        const auto layout_result=solve_puzzle(halves,target,layout_options);
+        verify(halves,layout_result,target,true);
+        require(layout_result.layout_accepted && layout_result.layout_score<0,
+                "unverified high-score layout replaced a verified layout");
+
         // 面积相同也不一定能放进外框；失败不返回未确认的候选。
         const auto impossible = solve_puzzle({{{0, 0}, {800, 0}, {800, 120}, {0, 120}}}, target, options);
         require(!impossible.solved && impossible.placements.empty(), "impossible puzzle reported as solved");

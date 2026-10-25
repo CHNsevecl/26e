@@ -8,6 +8,60 @@ void require(bool value,const char* message) {
     if (!value) throw std::runtime_error(message);
 }
 
+void verify_all_generated_indices() {
+    const std::vector<std::string> ranks={"A","2","3","4","5","6","7","8","9","10","J","Q","K"};
+    for (const auto& rank : ranks) for (int suit=0;suit<4;++suit) {
+        cv::Mat face(360,240,CV_8UC3,cv::Scalar(255,255,255));
+        const cv::Scalar color=suit%2 ? cv::Scalar(0,0,210) : cv::Scalar(0,0,0);
+        cv::Mat glyph(64,90,CV_8UC3,cv::Scalar(255,255,255));
+        int baseline=0;
+        const auto text_size=cv::getTextSize(rank,cv::FONT_HERSHEY_SIMPLEX,1.6,2,&baseline);
+        cv::putText(glyph,rank,{2,44},cv::FONT_HERSHEY_SIMPLEX,1.6,color,2,cv::LINE_AA);
+        cv::Mat cropped=glyph(cv::Rect(1,44-text_size.height-1,text_size.width+2,text_size.height+3)),resized;
+        cv::resize(cropped,resized,{rank=="10" ? 34 : 25,42});
+        resized.copyTo(face(cv::Rect(14,17,resized.cols,resized.rows)));
+        if (suit==0) {
+            for (const auto p : std::vector<cv::Point>{{26,81},{20,88},{32,88}}) cv::circle(face,p,6,color,cv::FILLED);
+            cv::fillConvexPoly(face,std::vector<cv::Point>{{26,86},{22,98},{30,98}},color);
+        } else if (suit==1) {
+            cv::circle(face,{21,82},6,color,cv::FILLED);cv::circle(face,{31,82},6,color,cv::FILLED);
+            cv::fillConvexPoly(face,std::vector<cv::Point>{{15,82},{37,82},{26,98}},color);
+        } else if (suit==2) {
+            cv::fillConvexPoly(face,std::vector<cv::Point>{{26,76},{15,89},{37,89}},color);
+            cv::circle(face,{21,88},6,color,cv::FILLED);cv::circle(face,{31,88},6,color,cv::FILLED);
+            cv::fillConvexPoly(face,std::vector<cv::Point>{{26,88},{22,99},{30,99}},color);
+        } else cv::fillConvexPoly(face,std::vector<cv::Point>{{26,75},{16,87},{26,99},{36,87}},color);
+        cv::Mat opposite;
+        cv::flip(face(cv::Rect(0,0,60,110)),opposite,-1);
+        opposite.copyTo(face(cv::Rect(180,250,60,110)));
+        auto evidence=[&](const cv::Mat& image) {
+            CardRecognition recognized;
+            CardFragment fragment;
+            fragment.bounds={0,0,240,360};fragment.image=image;
+            fragment.mask=cv::Mat(image.size(),CV_8UC1,cv::Scalar(255));fragment.texture_mask=fragment.mask;
+            fragment.normalized_ink=cv::Mat(image.size(),CV_32FC1);
+            for (int y=0;y<image.rows;++y) for (int x=0;x<image.cols;++x) {
+                const auto pixel=image.at<cv::Vec3b>(y,x);
+                fragment.normalized_ink.at<float>(y,x)=1-std::min({pixel[0],pixel[1],pixel[2]})/255.f;
+            }
+            recognized.fragments.push_back(fragment);
+            return evaluate_card_layout(recognized,std::vector<PuzzlePlacement>{PuzzlePlacement{}},{0,0,240,360});
+        };
+        const auto good=evidence(face);
+        if (!good.indices_verified) std::cerr << "generated " << rank << " suit " << suit << " missing index\n";
+        require(good.indices_verified,"a generated rank/suit pair failed diagonal verification");
+        cv::Mat faded=face.clone();
+        cv::Mat faded_index=faded(cv::Rect(0,0,60,110));
+        faded_index.convertTo(faded_index,-1,0.35,255*0.65);
+        require(evidence(faded).indices_verified,"faint but matching corner strokes were rejected");
+        cv::Mat same_direction=face.clone();
+        face(cv::Rect(0,0,60,110)).copyTo(same_direction(cv::Rect(180,250,60,110)));
+        require(!evidence(same_direction).indices_verified,"upright indices on both corners were accepted");
+        face(cv::Rect(180,250,60,110)).setTo(cv::Scalar(255,255,255));
+        require(!evidence(face).indices_verified,"a missing opposite index was accepted");
+    }
+}
+
 cv::Mat face() {
     cv::Mat card(336,240,CV_8UC3,cv::Scalar(240,240,240));
     cv::line(card,{0,62},{239,62},{30,30,210},12);
@@ -52,6 +106,7 @@ void verify(const CardPuzzleResult& card, const char* stage) {
 
 int main(int argc,char** argv) {
     try {
+        verify_all_generated_indices();
         const auto scene=two_pieces();
         const auto original=scene.clone();
         const auto recognized=recognize_card_pieces(scene);
@@ -96,6 +151,8 @@ int main(int argc,char** argv) {
         require(rounded_piece.ready && rounded_piece.pieces.pieces_point.front().size()==4,
                 "rounded card corners treated as extra cut edges");
         require(rounded_piece.foreground_mask.at<uchar>(100,100)==0,"rounded physical corner was filled");
+        require(std::abs(cv::contourArea(rounded_piece.pieces.pieces_point.front())-60000)<1200,
+                "near-right-angle rounded seeds bypassed supported straight-edge fitting");
         cv::Mat beveled(600,600,CV_8UC3,cv::Scalar(25,25,25));
         cv::fillPoly(beveled,std::vector<std::vector<cv::Point>>{{{100,100},{280,100},{300,120},{300,400},{100,400}}},
                      cv::Scalar(235,235,235));
@@ -182,13 +239,95 @@ int main(int argc,char** argv) {
                 (centers[0].y-middle.y)*(centers[3].y-middle.y)<0,
                 "rotated heart-J printing reversed inside a rectangular subassembly");
 #endif
+#ifdef CARD_ACE_PHOTO_FIXTURE
+        // Sparse black printing used to put both A corners on one side and
+        // scatter the central spade, despite passing rectangle coverage checks.
+        const auto ace_photo=cv::imread(CARD_ACE_PHOTO_FIXTURE);
+        require(!ace_photo.empty(),"missing spade-A fixture");
+        const auto ace_result=solve_card_puzzle(ace_photo);
+        verify(ace_result,"four-piece spade A");
+        require(ace_result.recognition.fragments.size()==4,"spade-A piece count changed");
+        const auto ace_target=ace_result.result.target;
+        const auto ace_middle=ace_target.tl()+cv::Point2f(ace_target.width/2,ace_target.height/2);
+        std::vector<cv::Point2f> ace_centers(4);
+        const std::vector<std::size_t> physical_corners={3,3,1,3};
+        for (const auto& placement : ace_result.result.placements) {
+            ace_centers[placement.source_index]=placement.center_gravity;
+            const auto vertex=placement.points[physical_corners[placement.source_index]];
+            const double distance=std::min({cv::norm(vertex-ace_target.tl()),cv::norm(vertex-ace_target.br()),
+                cv::norm(vertex-cv::Point2f(ace_target.x+ace_target.width,ace_target.y)),
+                cv::norm(vertex-cv::Point2f(ace_target.x,ace_target.y+ace_target.height))});
+            require(distance<8,"spade-A physical rounded corner placed on an internal seam");
+        }
+        require((ace_centers[1].x-ace_middle.x)*(ace_centers[3].x-ace_middle.x)<0 &&
+                (ace_centers[1].y-ace_middle.y)*(ace_centers[3].y-ace_middle.y)<0,
+                "spade-A printed corner indices not restored to opposite diagonals");
+#endif
+#ifdef CARD_SPLIT_CUT_PHOTO_FIXTURE
+        // A printed club split one cut into two near-collinear fitted lines;
+        // intersecting them used to fall back to a noisy nine-vertex contour.
+        const auto split_cut_photo=cv::imread(CARD_SPLIT_CUT_PHOTO_FIXTURE);
+        require(!split_cut_photo.empty(),"missing split-cut club-six fixture");
+        const auto split_cut=recognize_card_pieces(split_cut_photo);
+        require(split_cut.ready && split_cut.fragments.size()==4,"split-cut photo lost a physical card piece");
+        for (const auto& polygon : split_cut.pieces.pieces_point)
+            require(polygon.size()==4,"two supported parts of one straight cut were not merged");
+#endif
+#ifdef CARD_SHORT_CUT_PHOTO_FIXTURE
+        // A real short straight cut has rounded/noisy endpoints; one seed chord
+        // was discarded as a flower arc, producing a nine-edge model.
+        const auto short_cut_photo=cv::imread(CARD_SHORT_CUT_PHOTO_FIXTURE);
+        require(!short_cut_photo.empty(),"missing noisy short-cut fixture");
+        const auto short_cut=recognize_card_pieces(short_cut_photo);
+        require(short_cut.ready && short_cut.fragments.size()==4,"short-cut capture lost a card piece");
+        for (const auto& polygon : short_cut.pieces.pieces_point)
+            require(polygon.size()==4,"supported short straight cut became spurious polygon edges");
+#endif
+#ifdef CARD_SIX_PHOTO_FIXTURE
+        const auto six_photo=cv::imread(CARD_SIX_PHOTO_FIXTURE);
+        CardPuzzleOptions indexed_options;
+        indexed_options.require_corner_indices=true;
+        const auto six_result=solve_card_puzzle(six_photo,indexed_options);
+        verify(six_result,"four-piece club six");
+        require(six_result.layout.indices_verified,"club-six indices not on opposite corners and directions");
+        const double center_line=six_photo.rows*0.5;
+        for (const auto& placement : six_result.result_machine.placements)
+            for (const auto point : placement.points)
+                require(point.y<center_line,"card machine polygon extends below the A4 center line");
+        cv::Mat machine_gray;
+        cv::cvtColor(six_result.machine_image,machine_gray,cv::COLOR_BGR2GRAY);
+        std::vector<cv::Point> painted;
+        cv::findNonZero(machine_gray,painted);
+        require(!painted.empty() && cv::boundingRect(painted).br().y<=center_line,
+                "physical card texture extends below the A4 center line");
+        require(six_result.layout.pattern_match>0.7,"club-six inner pips are no longer aligned");
+        for (const auto& fragment : six_result.recognition.fragments) {
+            cv::Mat recovered;
+            cv::subtract(fragment.texture_mask,fragment.mask,recovered);
+            require(cv::countNonZero(recovered)>100,"cut-edge printed pips missing from texture mask");
+        }
+        auto wrong=six_result.result.placements;
+        // Move a single indexed quarter through a half-turn in its own slot.
+        for (auto& placement : wrong) if (placement.source_index==1) {
+            placement.rotation_radians+=CV_PI;
+            placement.translation=placement.center_gravity*2-placement.translation;
+        }
+        require(!evaluate_card_layout(six_result.recognition,wrong,six_result.result.target).indices_verified,
+                "wrongly oriented club-six index passed the final send guard");
+#endif
         if (argc>1) {
+#ifdef CARD_SIX_PHOTO_FIXTURE
+            cv::imwrite(std::string(argv[1])+"/task2_club_six_result.png",six_result.assembled_image);
+#endif
 #ifdef CARD_FOUR_PHOTO_FIXTURE
             cv::imwrite(std::string(argv[1])+"/task2_heart_j_result.png",four_photo_result.assembled_image);
             cv::imwrite(std::string(argv[1])+"/task2_heart_j_machine.png",four_photo_result.machine_image);
 #endif
 #ifdef CARD_ROTATED_PHOTO_FIXTURE
             cv::imwrite(std::string(argv[1])+"/task2_rotated_heart_j_result.png",rotated_result.assembled_image);
+#endif
+#ifdef CARD_ACE_PHOTO_FIXTURE
+            cv::imwrite(std::string(argv[1])+"/task2_spade_ace_result.png",ace_result.assembled_image);
 #endif
             cv::imwrite(std::string(argv[1])+"/task2_synthetic_input.png",scene);
             cv::imwrite(std::string(argv[1])+"/task2_synthetic_result.png",fixed.assembled_image);

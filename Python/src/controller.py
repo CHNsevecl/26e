@@ -30,13 +30,15 @@ class ProcessTimeout(Exception):
 
 class PuzzleController:
     def __init__(self, executable, runs_dir, image=None,
-                 serial_device="/dev/ttyAMA0", retry_delay=1.0, process_timeout=45.0):
+                 serial_device="/dev/ttyAMA0", retry_delay=1.0, process_timeout=45.0,
+                 task2_process_timeout=90.0):
         self.executable = Path(executable).resolve()
         self.runs_dir = Path(runs_dir).resolve()
         self.image = Path(image).resolve() if image else None
         self.serial_device = serial_device
         self.retry_delay = retry_delay
         self.process_timeout = process_timeout
+        self.task2_process_timeout = task2_process_timeout
         self.events = queue.Queue()
         self.result = None
         self._cancel = threading.Event()
@@ -68,14 +70,14 @@ class PuzzleController:
                 self._cancel.set()
                 self.result = None
 
-    def _run(self, arguments, directory, log_name="recognition.log"):
+    def _run(self, arguments, directory, log_name="recognition.log", timeout=None):
         if self._cancel.is_set():
             raise Cancelled
         with (directory / log_name).open("w") as log:
             with subprocess.Popen([str(self.executable), *map(str, arguments)],
                                   cwd=directory, stdin=subprocess.DEVNULL,
                                   stdout=log, stderr=subprocess.STDOUT) as process:
-                deadline = time.monotonic() + self.process_timeout
+                deadline = time.monotonic() + (self.process_timeout if timeout is None else timeout)
                 try:
                     while process.poll() is None:
                         if self._cancel.wait(0.05):
@@ -127,7 +129,8 @@ class PuzzleController:
                 if self.image is not None:
                     arguments += ["--image", self.image]
                 try:
-                    code = self._run(arguments, directory)
+                    timeout = self.task2_process_timeout if task == "task2" else self.process_timeout
+                    code = self._run(arguments, directory, timeout=timeout)
                 except ProcessTimeout:
                     code = 1
                     self._post("log", "本次识别超时，已结束 C++ 进程。")

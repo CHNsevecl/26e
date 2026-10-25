@@ -26,6 +26,8 @@ with (base / 'calls').open('a') as log:
 mode = (base / 'mode').read_text()
 if '--send-result' in args:
     sys.exit(2 if mode == 'send_error' else 0)
+if mode == 'slow':
+    time.sleep(0.35)
 if mode == 'hang':
     (base / 'pid').write_text(str(os.getpid()))
     time.sleep(60)
@@ -132,6 +134,27 @@ if mode == 'wrong_task':
         self.assertTrue(any(kind == "error" for kind, _ in self.wait_done()))
         self.assertFalse(self.controller.send())
         self.assertEqual(len(self.calls()), 2)
+
+    def test_task2_uses_longer_budget_and_keeps_stop_responsive(self):
+        self.mode.write_text("slow")
+        self.controller.process_timeout = 0.1
+        self.controller.task2_process_timeout = 0.8
+        self.assertTrue(self.controller.start("task2"))
+        self.assertTrue(any(kind == "ready" for kind, _ in self.wait_done()))
+        self.assertEqual(len(self.calls()), 1, "task2 was terminated by the shorter task1 budget")
+        self.mode.write_text("hang")
+        self.controller.task2_process_timeout = 90
+        self.assertTrue(self.controller.start("task2"))
+        deadline = time.monotonic() + 3
+        while not (self.directory / "pid").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        pid = int((self.directory / "pid").read_text())
+        start = time.monotonic()
+        self.controller.stop()
+        self.assertIn(("stopped", None), self.wait_done())
+        self.assertLess(time.monotonic() - start, 1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
     def test_timeout_retries_then_can_be_stopped(self):
         self.mode.write_text("hang")

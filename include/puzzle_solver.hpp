@@ -7,6 +7,11 @@
 
 struct PuzzlePlacement;
 
+struct PuzzleLayoutScore {
+    double score=0;
+    bool accepted=true; // Prefer layouts that satisfy a task-specific appearance constraint.
+};
+
 // 所有长度和面积均使用透视校正后的像素坐标。
 struct PuzzleOptions {
     double position_tolerance = 5.0;
@@ -20,6 +25,8 @@ struct PuzzleOptions {
     std::function<double(const PuzzlePlacement&, const PuzzlePlacement&)> seam_score;
     // Optional appearance of a piece along the outside of the assembled rectangle.
     std::function<double(const PuzzlePlacement&, const cv::Rect2f&)> boundary_score;
+    // Optional complete-card appearance; evaluated only on complete layouts.
+    std::function<PuzzleLayoutScore(const std::vector<PuzzlePlacement>&, const cv::Rect2f&)> layout_score;
 };
 
 struct PuzzlePlacement {
@@ -43,6 +50,8 @@ struct PuzzleResult {
     double seam_score = 0.0;
     std::size_t evaluated_solutions = 0; // 图案模式下经过几何验收的候选数，不代表唯一解。
     double boundary_score = 0.0; // 与接缝评分独立记录的外框外观评分。
+    bool layout_accepted = true;
+    double layout_score = 0.0; // Whole-layout appearance, independent of local seams.
 };
 
 // 输入保持不变；每次候选独立验证，失败后回退。只旋转、平移，不缩放或翻面。

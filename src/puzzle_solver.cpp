@@ -183,7 +183,10 @@ public:
                 if (visit() || result_.search_limit_reached) break;
             }
         }
-        if (result_.solved && uses_appearance()) improve_appearance();
+        if (result_.solved && uses_appearance()) {
+            improve_exchanges();
+            improve_appearance();
+        }
         return result_;
     }
 
@@ -209,7 +212,16 @@ private:
         return score;
     }
 
-    bool uses_appearance() const { return options_.seam_score || options_.boundary_score; }
+    PuzzleLayoutScore layout_score(const std::vector<Candidate>& layout) const {
+        if (!options_.layout_score) return {};
+        std::vector<PuzzlePlacement> placements;
+        for (const auto& candidate : layout) placements.push_back(candidate.placement);
+        auto score=options_.layout_score(placements,target_);
+        if (!std::isfinite(score.score)) score.score=0;
+        return score;
+    }
+
+    bool uses_appearance() const { return options_.seam_score || options_.boundary_score || options_.layout_score; }
 
     void set_target(cv::Rect2f target) {
         target_ = target;
@@ -415,6 +427,11 @@ private:
             }
             if (depth + 1 == shapes_.size()) {
                 for (const auto& layout : beam) {
+                    // Once a valid geometry exists, reserve budget for appearance
+                    // exchanges instead of spending it all on near-duplicate fits.
+                    if (uses_appearance() && shapes_.size()<=8 && result_.solved &&
+                        std::chrono::duration<double>(std::chrono::steady_clock::now()-start_).count() >=
+                            0.65*options_.time_limit_seconds) break;
                     if (limit_reached()) return;
                     ++result_.explored_nodes;
                     set_target(layout.target);
@@ -471,12 +488,18 @@ private:
         const double appearance = appearance_score(placed_);
         const double boundary = boundary_score(placed_);
         // 不用极小的颜色采样收益换取更多缺口、重叠或框外面积。
-        const double quality = appearance + boundary - 0.02 * (overlap_area + outside_area +
+        const auto whole_layout=layout_score(placed_);
+        const double quality = appearance + boundary + whole_layout.score - 0.02 * (overlap_area + outside_area +
             (1.0 - coverage) * target_.area());
-        if (uses_appearance() && result_.solved && quality <= best_solution_quality_) return true;
+        if (uses_appearance() && result_.solved &&
+            ((result_.layout_accepted && !whole_layout.accepted) ||
+             (result_.layout_accepted==whole_layout.accepted && quality<=best_solution_quality_))) return true;
         best_solution_quality_ = quality;
         result_.seam_score = appearance;
         result_.boundary_score = boundary;
+        result_.layout_score = whole_layout.score;
+        result_.layout_accepted = whole_layout.accepted;
+        ++solution_revision_;
         result_.solved = true;
         result_.target = target_;
         result_.coverage = coverage;
@@ -575,6 +598,71 @@ private:
         if (!accept_complete()) { placed_ = original; set_target(original_target); }
     }
 
+    // Try exchanging similarly sized pieces, with independent rigid half-turns.
+    // Geometry remains authoritative: every trial is re-fitted and fully checked.
+    void improve_exchanges() {
+        const std::size_t count=result_.placements.size();
+        if (count<2 || count>8) return;
+        struct Trial { std::vector<Candidate> pieces; double score; bool accepted; };
+        const auto within_exchange_budget=[&] {
+            return std::chrono::duration<double>(std::chrono::steady_clock::now()-start_).count() <
+                0.9*options_.time_limit_seconds;
+        };
+        for (int pass=0;pass<2;++pass) {
+            const auto before=solution_revision_;
+            const auto base=result_.placements;
+            const auto target=result_.target;
+            std::vector<Trial> trials;
+            for (std::size_t i=0;i<count;++i) {
+                for (std::size_t j=i+1;j<count;++j) {
+                    const auto bounds_i=cv::boundingRect(base[i].points),bounds_j=cv::boundingRect(base[j].points);
+                    const double margin=4*options_.position_tolerance+1;
+                    if (std::abs(bounds_i.width-bounds_j.width)>margin ||
+                        std::abs(bounds_i.height-bounds_j.height)>margin) continue;
+                    for (int turns=0;turns<4;++turns) {
+                        if (limit_reached() || !within_exchange_budget()) return;
+                        Trial trial;
+                        for (std::size_t k=0;k<count;++k) {
+                            Candidate candidate;
+                            candidate.placement=base[k];
+                            if (k==i || k==j) {
+                                auto& placement=candidate.placement;
+                                const auto origin=base[k].center_gravity;
+                                const auto destination=base[k==i ? j : i].center_gravity;
+                                const double angle=(turns&(k==i ? 1 : 2)) ? CV_PI : 0;
+                                placement.center_gravity=destination;
+                                placement.rotation_radians=std::remainder(placement.rotation_radians+angle,2*CV_PI);
+                                placement.translation=rotate(placement.translation-origin,angle)+destination;
+                                for (auto& p : placement.points) p=rotate(p-origin,angle)+destination;
+                            }
+                            candidate.triangles=triangulate(candidate.placement.points);
+                            trial.pieces.push_back(std::move(candidate));
+                        }
+                        placed_=trial.pieces;
+                        set_target(target);
+                        const auto appearance=layout_score(placed_);
+                        trial.accepted=appearance.accepted;
+                        trial.score=appearance_score(placed_)+boundary_score(placed_)+appearance.score-10*layout_error();
+                        trials.push_back(std::move(trial));
+                    }
+                }
+            }
+            std::stable_sort(trials.begin(),trials.end(),[](const Trial& a,const Trial& b) {
+                return a.accepted!=b.accepted ? a.accepted : a.score>b.score;
+            });
+            for (const auto& trial : trials) {
+                if (limit_reached() || !within_exchange_budget()) return;
+                placed_=trial.pieces;
+                set_target(target);
+                ++result_.explored_nodes;
+                const auto previous=solution_revision_;
+                if (!accept_complete()) improve_solution();
+                if (solution_revision_>previous) break;
+            }
+            if (solution_revision_==before) break;
+        }
+    }
+
     // Similar card fragments can form a valid rectangle with a whole strip
     // reversed. Test rigid half-turns of rectangular subassemblies and keep the
     // original complete geometry checks for every candidate.
@@ -582,7 +670,7 @@ private:
         const std::size_t count=result_.placements.size();
         if (count<2 || count>8) return;
         for (int pass=0;pass<2;++pass) {
-            const double before=best_solution_quality_;
+            const auto before=solution_revision_;
             const auto base=result_.placements;
             const auto target=result_.target;
             for (std::size_t subset=1;subset+1<(std::size_t{1}<<count);++subset) {
@@ -619,7 +707,7 @@ private:
                 ++result_.explored_nodes;
                 if (!accept_complete()) improve_solution();
             }
-            if (best_solution_quality_<=before) break;
+            if (solution_revision_==before) break;
         }
     }
 
@@ -658,6 +746,7 @@ private:
     std::vector<bool> used_;
     std::vector<Candidate> placed_;
     PuzzleResult result_;
+    std::size_t solution_revision_=0;
     double best_solution_quality_ = -std::numeric_limits<double>::infinity();
     bool valid_ = true;
     std::vector<cv::Rect2f> targets_;
