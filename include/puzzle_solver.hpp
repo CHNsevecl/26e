@@ -18,6 +18,8 @@ struct PuzzleOptions {
     double time_limit_seconds = 8.0;
     // 可选的接缝图案评分，越高越好。为空时保持原有几何求解行为。
     std::function<double(const PuzzlePlacement&, const PuzzlePlacement&)> seam_score;
+    // Optional appearance of a piece along the outside of the assembled rectangle.
+    std::function<double(const PuzzlePlacement&, const cv::Rect2f&)> boundary_score;
 };
 
 struct PuzzlePlacement {
@@ -40,6 +42,7 @@ struct PuzzleResult {
     cv::Rect2f target; // 实际采用的矩形，像素坐标；自动尺寸求解失败时为空。
     double seam_score = 0.0;
     std::size_t evaluated_solutions = 0; // 图案模式下经过几何验收的候选数，不代表唯一解。
+    double boundary_score = 0.0; // 与接缝评分独立记录的外框外观评分。
 };
 
 // 输入保持不变；每次候选独立验证，失败后回退。只旋转、平移，不缩放或翻面。

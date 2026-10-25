@@ -71,6 +71,40 @@ std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) 
     const double perimeter=cv::arcLength(contour,true);
     std::vector<cv::Point> seed;
     cv::approxPolyDP(contour,seed,perimeter*0.01,true);
+    // A rounded/noisy end can split one long straight side into two seed edges.
+    // Merge only a shallow convex turn supported by the original contour pixels;
+    // sharp bevels and actual concave cuts must remain separate edges.
+    bool merged=true;
+    while (merged && seed.size()>3) {
+        merged=false;
+        for (std::size_t i=0;i<seed.size();++i) {
+            const auto a=seed[(i+seed.size()-1)%seed.size()],b=seed[i],c=seed[(i+1)%seed.size()];
+            const cv::Point2f before=b-a,after=c-b;
+            const double lengths=cv::norm(before)*cv::norm(after);
+            const double turn=before.x*after.y-before.y*after.x;
+            if (lengths<1 || before.dot(after)<std::cos(12*CV_PI/180)*lengths ||
+                turn*cv::contourArea(seed,true)<=0) continue;
+            const auto first=std::find(contour.begin(),contour.end(),a);
+            const auto last=std::find(contour.begin(),contour.end(),c);
+            if (first==contour.end() || last==contour.end()) continue;
+            std::vector<cv::Point2f> arc;
+            for (std::size_t j=first-contour.begin();;j=(j+1)%contour.size()) {
+                arc.push_back(contour[j]);
+                if (j==static_cast<std::size_t>(last-contour.begin())) break;
+            }
+            if (arc.size()<20) continue;
+            cv::Vec4f line;
+            cv::fitLine(arc,line,cv::DIST_L2,0,0.01,0.01);
+            std::vector<double> errors;
+            for (const auto& point : arc)
+                errors.push_back(std::abs((point.x-line[2])*line[1]-(point.y-line[3])*line[0]));
+            std::sort(errors.begin(),errors.end());
+            if (errors[errors.size()*9/10]>1.5 || errors[errors.size()*19/20]>3.0) continue;
+            seed.erase(seed.begin()+i);
+            merged=true;
+            break;
+        }
+    }
     const std::vector<cv::Point2f> fallback(seed.begin(),seed.end());
     if (seed.size()<3) return fallback;
     if (seed.size()==4) {
@@ -109,7 +143,8 @@ std::vector<cv::Point2f> fit_piece_edges(const std::vector<cv::Point>& contour) 
         const double curvature=deviations[deviations.size()*4/5];
         if (curvature>1.2) all_straight=false;
         // 真正的短直边仍保留。仅合并长度较短、明显弯曲的圆角过渡。
-        if (length<0.08*perimeter && curvature>1.2) continue;
+        const double corner_curvature=std::clamp(0.05*length,0.65,1.2);
+        if (length<0.08*perimeter && curvature>corner_curvature) continue;
         if (support.size()<8) support=arc;
         if (support.size()<2) return fallback;
         cv::Vec4f line;
@@ -239,6 +274,49 @@ bool sample(const CardRecognition& recognition, const PuzzlePlacement& placement
         !fragment.mask.at<uchar>(local)) return false;
     color = fragment.image.at<cv::Vec3b>(local);
     return true;
+}
+
+// 普通扑克牌的白色外边应位于牌面外框，避免相似四边形把两条白边拼到牌面中间。
+std::vector<std::vector<double>> border_evidence(const CardRecognition& recognition) {
+    std::vector<std::vector<double>> evidence;
+    for (std::size_t id=0; id<recognition.fragments.size(); ++id) {
+        const auto& fragment=recognition.fragments[id];
+        std::vector<double> levels;
+        for (int y=0; y<fragment.image.rows; y+=3)
+            for (int x=0; x<fragment.image.cols; x+=3)
+                if (fragment.mask.at<uchar>(y,x)) {
+                    const auto c=fragment.image.at<cv::Vec3b>(y,x);
+                    levels.push_back(std::min({c[0],c[1],c[2]}));
+                }
+        // 每块独立估计纸白，减小照明不均导致的白边评分差异。
+        std::sort(levels.begin(),levels.end());
+        const double white=levels.empty() ? 255 : std::max(80.0,levels[levels.size()*9/10]);
+        const auto& points=recognition.pieces.pieces_point[id];
+        PuzzlePlacement identity;
+        identity.source_index=id;
+        const double sign=cv::contourArea(points,true)>0 ? 1 : -1;
+        std::vector<double> edges;
+        for (std::size_t j=0; j<points.size(); ++j) {
+            const auto p=points[j],v=points[(j+1)%points.size()]-p;
+            const double length=cv::norm(v);
+            if (length<1e-6) { edges.push_back(0); continue; }
+            const cv::Point2f inward(-v.y*sign/length,v.x*sign/length);
+            double ink=0;
+            int count=0;
+            // 检查边内多个深度，不能把裁边处的一排浅色像素当作整条白框。
+            for (int k=0;k<48;++k)
+                for (const float depth : {3.f,7.f,12.f}) {
+                    cv::Vec3d color;
+                    if (!sample(recognition,identity,p+v*((k+0.5f)/48)+inward*depth,color)) continue;
+                    ink+=std::clamp(1-std::min({color[0],color[1],color[2]})/white,0.0,1.0);
+                    ++count;
+                }
+            // 软评分：无足够实体像素时不作判断；不改变几何验收阈值。
+            edges.push_back(count>=72 ? 0.2-2.0*ink/count : 0);
+        }
+        evidence.push_back(edges);
+    }
+    return evidence;
 }
 
 cv::Mat render(const CardRecognition& recognition, const std::vector<PuzzlePlacement>& placements) {
@@ -427,6 +505,22 @@ CardPuzzleResult solve_card_puzzle(const cv::Mat& warped,const CardPuzzleOptions
         scores.emplace(key,score);
         return score;
     };
+    if (options.use_white_border) {
+        const auto evidence=border_evidence(card.recognition);
+        solver.boundary_score=[&, evidence](const PuzzlePlacement& placement,const cv::Rect2f& target) {
+            double score=0;
+            const double tolerance=solver.position_tolerance+1;
+            for (std::size_t i=0;i<placement.points.size();++i) {
+                const auto p=placement.points[i],q=placement.points[(i+1)%placement.points.size()];
+                const bool on_border=(std::abs(p.x-target.x)<=tolerance && std::abs(q.x-target.x)<=tolerance) ||
+                    (std::abs(p.x-target.br().x)<=tolerance && std::abs(q.x-target.br().x)<=tolerance) ||
+                    (std::abs(p.y-target.y)<=tolerance && std::abs(q.y-target.y)<=tolerance) ||
+                    (std::abs(p.y-target.br().y)<=tolerance && std::abs(q.y-target.br().y)<=tolerance);
+                if (on_border) score+=cv::norm(q-p)*evidence[placement.source_index][i];
+            }
+            return score;
+        };
+    }
     const cv::Point2f origin(240,240);
     if (options.target_size_mm.area()>0) {
         card.result=solve_puzzle(card.recognition.pieces.pieces_point,

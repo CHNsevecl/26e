@@ -183,6 +183,7 @@ public:
                 if (visit() || result_.search_limit_reached) break;
             }
         }
+        if (result_.solved && uses_appearance()) improve_appearance();
         return result_;
     }
 
@@ -197,6 +198,18 @@ private:
                 }
         return score;
     }
+
+    double boundary_score(const std::vector<Candidate>& layout) const {
+        double score = 0;
+        if (options_.boundary_score)
+            for (const auto& candidate : layout) {
+                const double value = options_.boundary_score(candidate.placement, target_);
+                if (std::isfinite(value)) score += value;
+            }
+        return score;
+    }
+
+    bool uses_appearance() const { return options_.seam_score || options_.boundary_score; }
 
     void set_target(cv::Rect2f target) {
         target_ = target;
@@ -311,6 +324,10 @@ private:
                                             const double value = options_.seam_score(candidate.placement, placed.placement);
                                             if (std::isfinite(value)) candidate.score += value;
                                         }
+                                    if (options_.boundary_score) {
+                                        const double value = options_.boundary_score(candidate.placement, target_);
+                                        if (std::isfinite(value)) candidate.score += value;
+                                    }
                                     candidates.push_back(std::move(candidate));
                                 }
                             }
@@ -371,8 +388,9 @@ private:
                     set_target(layout.target);
                     placed_ = layout.pieces;
                     layout.score = -layout_error();
-                    if (options_.seam_score)
-                        layout.score += appearance_score(placed_) / std::max(1.0f, target_.width + target_.height);
+                    if (uses_appearance())
+                        layout.score += (appearance_score(placed_) + boundary_score(placed_)) /
+                            std::max(1.0f, target_.width + target_.height);
                 }
             }
             std::stable_sort(next.begin(), next.end(), [](const Layout& a, const Layout& b) { return a.score > b.score; });
@@ -403,7 +421,7 @@ private:
                     placed_ = layout.pieces;
                     // 即使初始拼法尚未通过验收，也先优化所有块的姿态，再执行原阈值验收。
                     improve_solution();
-                    if (result_.solved && !options_.seam_score) return;
+                    if (result_.solved && !uses_appearance()) return;
                 }
             }
         }
@@ -451,12 +469,14 @@ private:
             outside_area > target_.area() * options_.max_outside_ratio) return false;
         ++result_.evaluated_solutions;
         const double appearance = appearance_score(placed_);
+        const double boundary = boundary_score(placed_);
         // 不用极小的颜色采样收益换取更多缺口、重叠或框外面积。
-        const double quality = appearance - 0.02 * (overlap_area + outside_area +
+        const double quality = appearance + boundary - 0.02 * (overlap_area + outside_area +
             (1.0 - coverage) * target_.area());
-        if (options_.seam_score && result_.solved && quality <= best_solution_quality_) return true;
+        if (uses_appearance() && result_.solved && quality <= best_solution_quality_) return true;
         best_solution_quality_ = quality;
         result_.seam_score = appearance;
+        result_.boundary_score = boundary;
         result_.solved = true;
         result_.target = target_;
         result_.coverage = coverage;
@@ -553,6 +573,54 @@ private:
         }
         // accept_complete 只有通过原始全部阈值才会覆盖 result_，失败时原结果仍有效。
         if (!accept_complete()) { placed_ = original; set_target(original_target); }
+    }
+
+    // Similar card fragments can form a valid rectangle with a whole strip
+    // reversed. Test rigid half-turns of rectangular subassemblies and keep the
+    // original complete geometry checks for every candidate.
+    void improve_appearance() {
+        const std::size_t count=result_.placements.size();
+        if (count<2 || count>8) return;
+        for (int pass=0;pass<2;++pass) {
+            const double before=best_solution_quality_;
+            const auto base=result_.placements;
+            const auto target=result_.target;
+            for (std::size_t subset=1;subset+1<(std::size_t{1}<<count);++subset) {
+                if (limit_reached()) return;
+                std::vector<cv::Point2f> group;
+                double area=0;
+                for (std::size_t i=0;i<count;++i) {
+                    if (!(subset&(std::size_t{1}<<i))) continue;
+                    group.insert(group.end(),base[i].points.begin(),base[i].points.end());
+                    area+=std::abs(cv::contourArea(base[i].points));
+                }
+                float left=group.front().x,right=left,top=group.front().y,bottom=top;
+                for (const auto p : group) {
+                    left=std::min(left,p.x);right=std::max(right,p.x);
+                    top=std::min(top,p.y);bottom=std::max(bottom,p.y);
+                }
+                const double rectangularity=options_.min_coverage-options_.max_overlap_ratio-options_.max_outside_ratio;
+                if (area<(right-left)*(bottom-top)*rectangularity) continue;
+                const cv::Point2f twice_center(left+right,top+bottom);
+                placed_.clear();
+                for (std::size_t i=0;i<count;++i) {
+                    Candidate candidate;
+                    candidate.placement=base[i];
+                    if (subset&(std::size_t{1}<<i)) {
+                        auto& placement=candidate.placement;
+                        placement.rotation_radians=std::remainder(placement.rotation_radians+CV_PI,2*CV_PI);
+                        placement.translation=twice_center-placement.translation;
+                        for (auto& point : placement.points) point=twice_center-point;
+                    }
+                    candidate.triangles=triangulate(candidate.placement.points);
+                    placed_.push_back(std::move(candidate));
+                }
+                set_target(target);
+                ++result_.explored_nodes;
+                if (!accept_complete()) improve_solution();
+            }
+            if (best_solution_quality_<=before) break;
+        }
     }
 
     bool visit() {

@@ -172,13 +172,16 @@ bool task2(const cv::Mat& warped) {
         report << "recognized" << static_cast<int>(card.recognition.ready)
                << "solved" << static_cast<int>(result.solved)
                << "error" << card.error
-               << "matching_method" << "geometry_and_seam_continuity_without_reference"
+               << "matching_method" << (options.use_white_border ? "geometry_seams_and_white_border_without_reference" :
+                                        "geometry_and_seam_continuity_without_reference")
                << "contour_model" << "fitted_edges_with_physical_rounded_mask"
                << "unique_solution_verified" << 0
                << "input_piece_count" << static_cast<int>(pieces_origin.pieces_point.size())
                << "search_limit_reached" << static_cast<int>(result.search_limit_reached)
                << "explored_nodes" << static_cast<double>(result.explored_nodes)
                << "evaluated_solutions" << static_cast<double>(result.evaluated_solutions)
+               << "white_border_prior" << static_cast<int>(options.use_white_border)
+               << "boundary_score" << result.boundary_score
                << "seam_score" << result.seam_score
                << "coverage" << result.coverage
                << "overlap_area_pixels" << result.overlap_area

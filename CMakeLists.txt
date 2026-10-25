@@ -4,6 +4,12 @@ project(ps)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# Debug keeps symbols while optimizing the time-budgeted vision search.
+option(PUZZLE_OPTIMIZE_DEBUG "Optimize vision search in Debug builds" ON)
+if(PUZZLE_OPTIMIZE_DEBUG AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options("$<$<CONFIG:Debug>:-O2>")
+endif()
+
 # 找 OpenCV
 find_package(OpenCV REQUIRED)
 
@@ -35,5 +41,7 @@ if(BUILD_TESTING)
     add_executable(card_puzzle_test tests/card_puzzle_test.cpp src/card_puzzle.cpp src/puzzle_solver.cpp src/machine_result.cpp)
     target_link_libraries(card_puzzle_test ${OpenCV_LIBS})
     target_compile_definitions(card_puzzle_test PRIVATE CARD_PHOTO_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/card_three_uneven_light.jpeg")
+    target_compile_definitions(card_puzzle_test PRIVATE CARD_FOUR_PHOTO_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/card_four_heart_j.jpeg")
+    target_compile_definitions(card_puzzle_test PRIVATE CARD_ROTATED_PHOTO_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/card_four_heart_j_rotated.jpeg")
     add_test(NAME card_puzzle_test COMMAND card_puzzle_test)
 endif()

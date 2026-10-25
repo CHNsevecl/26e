@@ -142,7 +142,54 @@ int main(int argc,char** argv) {
                 "illuminated black background absorbed into card outline");
         require(photo_result.result.coverage>=0.97,"photo layout coverage below existing threshold");
 #endif
+#ifdef CARD_FOUR_PHOTO_FIXTURE
+        // Four similar quadrilaterals used to swap the columns: the white frame
+        // appeared down the middle while the printed figure was split outside.
+        const auto four_photo=cv::imread(CARD_FOUR_PHOTO_FIXTURE);
+        require(!four_photo.empty(),"missing four-piece heart-J fixture");
+        const auto four_photo_result=solve_card_puzzle(four_photo);
+        verify(four_photo_result,"four-piece heart-J photo");
+        require(four_photo_result.recognition.fragments.size()==4,"four-piece photo count changed");
+        const auto center=four_photo_result.result.target.tl()+cv::Point2f(
+            four_photo_result.result.target.width/2,four_photo_result.result.target.height/2);
+        for (const auto& placement : four_photo_result.result.placements) {
+            const auto offset=placement.center_gravity-center;
+            const double diagonal=offset.x*offset.y;
+            // Invariant to a global 180-degree rotation of the whole card.
+            const bool negative=placement.source_index==0 || placement.source_index==1;
+            require(negative ? diagonal<0 : diagonal>0,
+                    "heart-J columns swapped: white outside borders became an internal seam");
+        }
+        require(four_photo_result.result.boundary_score>0,"printed card edges selected as outside borders");
+#endif
+#ifdef CARD_ROTATED_PHOTO_FIXTURE
+        // This arrangement timed out repeatedly because two rounded/straight
+        // sides became extra seed edges. A solved rectangle must also restore
+        // the two printed J corners to opposite diagonals.
+        const auto rotated_photo=cv::imread(CARD_ROTATED_PHOTO_FIXTURE);
+        require(!rotated_photo.empty(),"missing rotated heart-J fixture");
+        const auto rotated_result=solve_card_puzzle(rotated_photo);
+        verify(rotated_result,"rotated four-piece heart-J photo");
+        require(rotated_result.recognition.fragments.size()==4,"rotated photo piece count changed");
+        for (const auto& polygon : rotated_result.recognition.pieces.pieces_point)
+            require(polygon.size()==4,"rounded/near-collinear edge introduced a spurious cut");
+        std::vector<cv::Point2f> centers(4);
+        for (const auto& placement : rotated_result.result.placements)
+            centers[placement.source_index]=placement.center_gravity;
+        const auto middle=rotated_result.result.target.tl()+cv::Point2f(
+            rotated_result.result.target.width/2,rotated_result.result.target.height/2);
+        require((centers[0].x-middle.x)*(centers[3].x-middle.x)<0 &&
+                (centers[0].y-middle.y)*(centers[3].y-middle.y)<0,
+                "rotated heart-J printing reversed inside a rectangular subassembly");
+#endif
         if (argc>1) {
+#ifdef CARD_FOUR_PHOTO_FIXTURE
+            cv::imwrite(std::string(argv[1])+"/task2_heart_j_result.png",four_photo_result.assembled_image);
+            cv::imwrite(std::string(argv[1])+"/task2_heart_j_machine.png",four_photo_result.machine_image);
+#endif
+#ifdef CARD_ROTATED_PHOTO_FIXTURE
+            cv::imwrite(std::string(argv[1])+"/task2_rotated_heart_j_result.png",rotated_result.assembled_image);
+#endif
             cv::imwrite(std::string(argv[1])+"/task2_synthetic_input.png",scene);
             cv::imwrite(std::string(argv[1])+"/task2_synthetic_result.png",fixed.assembled_image);
             cv::imwrite(std::string(argv[1])+"/task2_synthetic_machine.png",fixed.machine_image);

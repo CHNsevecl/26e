@@ -283,6 +283,20 @@ int main() {
         };
         verify(concave, solve_puzzle(concave, target, options), target, false);
 
+        // Perimeter appearance must affect ranking even without a seam callback.
+        auto border_options=exact_options();
+        border_options.boundary_score=[](const PuzzlePlacement& placement,const cv::Rect2f&) {
+            return placement.source_index==0 ? 1000.0*std::cos(placement.rotation_radians-CV_PI) : 0.0;
+        };
+        const std::vector<Polygon> halves={
+            {{0,0},{200,0},{200,240},{0,240}},
+            {{0,0},{200,0},{200,240},{0,240}}
+        };
+        const auto border_result=solve_puzzle(halves,target,border_options);
+        verify(halves,border_result,target,true);
+        require(border_result.boundary_score>999,"boundary-only appearance ignored in candidate ranking");
+        require(border_result.seam_score==0,"boundary appearance mixed into seam score");
+
         // 面积相同也不一定能放进外框；失败不返回未确认的候选。
         const auto impossible = solve_puzzle({{{0, 0}, {800, 0}, {800, 120}, {0, 120}}}, target, options);
         require(!impossible.solved && impossible.placements.empty(), "impossible puzzle reported as solved");

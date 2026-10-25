@@ -12,6 +12,7 @@ struct CardPuzzleOptions {
     double max_aspect = 0.85;
     double gap_mm = 5.0;
     PuzzleOptions solver;
+    bool use_white_border = true; // 普通白边扑克牌；无白边牌面可关闭此外观先验。
 };
 
 struct CardFragment {
