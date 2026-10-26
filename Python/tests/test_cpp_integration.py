@@ -56,9 +56,9 @@ class CppIntegrationTests(unittest.TestCase):
             machine = cv2.imread(str(output / "task2_machine.png"))
             rows = np.flatnonzero(np.any(machine != 0, axis=(1, 2)))
             self.assertGreater(len(rows), 0)
-            self.assertLess(rows[-1], warped.shape[0] / 2,
+            self.assertLess(rows[-1], warped.shape[0] / 2 - 40,
                             "card texture extends below the A4 center line")
-            self.assertTrue(all(target["target_pixels"][1] < warped.shape[0] / 2
+            self.assertTrue(all(target["target_pixels"][1] < warped.shape[0] / 2 - 40
                                 for target in packet["targets"]),
                             "saved machine targets were not moved into the A4 upper half")
         result = self.run_cpp("--send-result", output / "machine_targets.json")
@@ -180,7 +180,9 @@ class CppIntegrationTests(unittest.TestCase):
     def test_club_queen_consecutive_captures_and_manual_send(self):
         # The first capture originally timed out. Replaying its camera JPEG
         # also joins the Q tail to a neighboring court-frame line.
-        for index in (1, 2):
+        # Captures 3/4 cover an automatic-size failure; 5/6 cover a wrongly
+        # reversed unindexed quarter and the subsequent successful recapture.
+        for index in (1, 2, 3, 4, 5, 6):
             with self.subTest(capture=index):
                 self.check_recognition("task2", PROJECT / f"tests/data/card_club_queen_capture_{index:02d}.jpeg")
                 report = cv2.FileStorage(str(self.directory / "output/task2_result.yml"), cv2.FILE_STORAGE_READ)
@@ -191,8 +193,9 @@ class CppIntegrationTests(unittest.TestCase):
                     self.assertGreater(report.getNode("face_pattern_match").real(), 0.8)
                     sources = report.getNode("source_polygons")
                     self.assertEqual(sources.size(), 4)
-                    for piece in range(sources.size()):
-                        self.assertEqual(sources.at(piece).getNode("points").size(), 8)
+                    if index <= 2:
+                        for piece in range(sources.size()):
+                            self.assertEqual(sources.at(piece).getNode("points").size(), 8)
                 finally:
                     report.release()
 

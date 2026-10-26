@@ -717,7 +717,17 @@ CardPuzzleResult solve_card_puzzle(const cv::Mat& warped,const CardPuzzleOptions
     card.layout=evaluate_card_layout(card.recognition,card.result.placements,card.result.target);
     if (options.require_corner_indices && !card.layout.indices_verified) {
         card.assembled_image=render(card.recognition,card.result.placements);
-        card.error="数字/字母角标未通过对角位置与相反方向校验，请重新拍照";
+        if (!card.layout.first_index || !card.layout.opposite_index) {
+            const std::string location=!card.layout.first_index && !card.layout.opposite_index ? "左上和右下" :
+                                       !card.layout.first_index ? "左上" : "右下";
+            card.error=location+"角标未提取到独立的数字/字母与小花色，请检查清晰度后重新拍照";
+        } else if (card.layout.rank_match<0.65) {
+            card.error="对角角标的数字/字母形状匹配不足，请检查拼接预览后重新拍照";
+        } else if (card.layout.suit_match<0.65) {
+            card.error="对角角标的小花色形状匹配不足，请检查拼接预览后重新拍照";
+        } else {
+            card.error="对角角标的数字/字母宽高比例不一致，请检查拼接预览后重新拍照";
+        }
         card.result.solved=false;
         return card;
     }
@@ -726,9 +736,10 @@ CardPuzzleResult solve_card_puzzle(const cv::Mat& warped,const CardPuzzleOptions
         placement.center_gravity=rotate(card.recognition.pieces.center_gravity[placement.source_index],
                                         placement.rotation_radians)+placement.translation;
     // Keep every expanded card piece above the actual warped A4 midpoint.
-    // A 2 mm inset also leaves room for rasterization and contour-fit error.
+    // Keep 12 mm above the centerline: 10 mm higher than the previous layout,
+    // plus the existing 2 mm allowance for rasterization and contour-fit error.
     const cv::Rect2f machine_workspace(0,0,static_cast<float>(warped.cols),
-                                      warped.rows*0.5f-2*scale);
+                                      warped.rows*0.5f-12*scale);
     card.result_machine=make_machine_result(card.result,options.gap_mm*scale,machine_workspace);
     card.assembled_image=render(card.recognition,card.result.placements);
     if (card.result_machine.ready) card.machine_image=render(card.recognition,card.result_machine.placements);
@@ -755,25 +766,9 @@ cv::Mat normalized_symbol(const cv::Mat& symbol,cv::Size size) {
     return result;
 }
 
-// Locate the rank-over-small-suit stack, without a font model or a hard-coded
-// card value. Two-digit ranks may contain several connected components.
-IndexSignature index_signature(const cv::Mat& patch,bool separate_thin_lines=false) {
-    cv::Mat binary,labels,stats,centers;
-    const double sampling=patch.cols/24.0;
-    // Estimate local paper and ink contrast from the rank column, excluding
-    // the neighboring large pip. Weak connected strokes still define the box.
-    std::vector<float> levels;
-    for (int y=0;y<cvRound(30*sampling);++y)
-        for (int x=0;x<cvRound(patch.cols*0.8);++x) levels.push_back(patch.at<float>(y,x));
-    std::sort(levels.begin(),levels.end());
-    const double paper=levels[levels.size()/5],peak=levels[levels.size()*98/100];
-    if (peak-paper<0.10) return {};
-    cv::Mat contrast;
-    cv::subtract(patch,paper,contrast);
-    cv::max(contrast,0,contrast);
-    contrast/=peak-paper;
-    cv::min(contrast,1,contrast);
-    cv::compare(contrast,0.25,binary,cv::CMP_GT);
+IndexSignature find_index_stack(const cv::Mat& contrast,const cv::Mat& source,bool separate_thin_lines) {
+    cv::Mat binary=source.clone(),labels,stats,centers;
+    const double sampling=binary.cols/24.0;
     // Thin fitted-cut gaps and court-frame lines must not merge into the small suit.
     // If no stack can be found, also separate thin bridges from the rank: a
     // blurred Q tail can touch the neighboring court frame. Keep the original
@@ -790,7 +785,7 @@ IndexSignature index_signature(const cv::Mat& patch,bool separate_thin_lines=fal
         const int suit_area=stats.at<int>(suit,cv::CC_STAT_AREA);
         if (suit_area<7*sampling*sampling || sb.width<4*sampling || sb.width>15*sampling ||
             sb.height<5*sampling || sb.height>15*sampling || sb.x<sampling ||
-            sb.br().x>=patch.cols-sampling || sb.y<22*sampling || sb.y>43*sampling) continue;
+            sb.br().x>=binary.cols-sampling || sb.y<22*sampling || sb.y>43*sampling) continue;
         cv::Rect rb;
         int rank_area=0;
         for (int rank=1;rank<count;++rank) {
@@ -798,7 +793,7 @@ IndexSignature index_signature(const cv::Mat& patch,bool separate_thin_lines=fal
                                stats.at<int>(rank,cv::CC_STAT_WIDTH),stats.at<int>(rank,cv::CC_STAT_HEIGHT));
             const int area=stats.at<int>(rank,cv::CC_STAT_AREA);
             if (area<2*sampling*sampling || box.y<sampling || box.br().y>=sb.y || box.x<sampling ||
-                box.br().x>=patch.cols-sampling ||
+                box.br().x>=binary.cols-sampling ||
                 std::abs(centers.at<double>(rank,0)-centers.at<double>(suit,0))>7*sampling) continue;
             rb=rank_area ? rb|box : box;
             rank_area+=area;
@@ -812,8 +807,48 @@ IndexSignature index_signature(const cv::Mat& patch,bool separate_thin_lines=fal
         best.suit=normalized_symbol(contrast(sb),{24,24});
         best_area=rank_area+suit_area;
     }
-    if (!best.found && !separate_thin_lines) return index_signature(patch,true);
     return best;
+}
+
+// Locate the rank-over-small-suit stack, without a font model or a hard-coded
+// card value. Two-digit ranks may contain several connected components.
+IndexSignature index_signature(const cv::Mat& patch) {
+    const double sampling=patch.cols/24.0;
+    std::vector<float> levels;
+    for (int y=0;y<cvRound(30*sampling);++y)
+        for (int x=0;x<cvRound(patch.cols*0.8);++x) levels.push_back(patch.at<float>(y,x));
+    std::sort(levels.begin(),levels.end());
+    const double paper=levels[levels.size()/5],peak=levels[levels.size()*98/100];
+    if (peak-paper<0.10) return {};
+    cv::Mat contrast,binary;
+    cv::subtract(patch,paper,contrast);
+    cv::max(contrast,0,contrast);
+    contrast/=peak-paper;
+    cv::min(contrast,1,contrast);
+    cv::compare(contrast,0.25,binary,cv::CMP_GT);
+    for (bool separate : {false,true}) {
+        const auto signature=find_index_stack(contrast,binary,separate);
+        if (signature.found) return signature;
+    }
+    // A blurred court-frame rule can join BOTH glyphs with bridges wider than
+    // the opening kernel. Only as a fallback, locate a long vertical ink rule
+    // on the inner side of the index. Require support down to the patch bottom
+    // (below the small suit), so a wide rank such as "10" is not itself a rule.
+    // Remove the rule and its inner side from the localization mask only.
+    // Glyph comparison still samples the original continuous contrast image.
+    const int top=cvRound(patch.rows*0.2),bottom=cvRound(patch.rows*0.9);
+    for (int x=cvRound(patch.cols*0.7);x<patch.cols-sampling;++x) {
+        if (cv::countNonZero(binary.col(x).rowRange(top,patch.rows))<0.7*(patch.rows-top) ||
+            cv::countNonZero(binary.col(x).rowRange(bottom,patch.rows))<0.7*(patch.rows-bottom)) continue;
+        cv::Mat without_frame=binary.clone();
+        without_frame.colRange(std::max(0,x-cvRound(sampling/2)),patch.cols).setTo(0);
+        for (bool separate : {false,true}) {
+            const auto signature=find_index_stack(contrast,without_frame,separate);
+            if (signature.found) return signature;
+        }
+        break;
+    }
+    return {};
 }
 
 double ink_agreement(const cv::Mat& a,const cv::Mat& b) {

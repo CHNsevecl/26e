@@ -8,6 +8,49 @@ void require(bool value,const char* message) {
     if (!value) throw std::runtime_error(message);
 }
 
+CardLayoutEvidence index_evidence(const cv::Mat& ink) {
+    CardRecognition recognition;
+    CardFragment fragment;
+    fragment.bounds={0,0,240,360};
+    fragment.mask=cv::Mat(ink.size(),CV_8UC1,cv::Scalar(255));
+    fragment.texture_mask=fragment.mask;
+    fragment.normalized_ink=ink;
+    recognition.fragments.push_back(fragment);
+    return evaluate_card_layout(recognition,std::vector<PuzzlePlacement>{PuzzlePlacement{}},{0,0,240,360});
+}
+
+void verify_recorded_index_stacks() {
+#ifdef CARD_INDEX_STACK_FIXTURE
+    // Actual normalized ink from the nine saved layouts, with their original
+    // rotations and subpixel interpolation. Seven previously lost an index to
+    // the adjacent court frame; JPEG re-recognition can hide this exact defect.
+    cv::FileStorage fixtures(CARD_INDEX_STACK_FIXTURE,cv::FileStorage::READ);
+    require(fixtures.isOpened(),"missing recorded index stacks");
+    require(fixtures["captures"].size()==9,"lost an index capture regression");
+    for (const auto& node : fixtures["captures"]) {
+        cv::Mat ink=cv::Mat::zeros(360,240,CV_32FC1),first,opposite;
+        node["first"]>>first;node["opposite"]>>opposite;
+        first.copyTo(ink(cv::Rect(4,6,48,106)));
+        opposite.copyTo(ink(cv::Rect(188,248,48,106)));
+        const auto evidence=index_evidence(ink);
+        if (!evidence.indices_verified) std::cerr << "recorded index " << std::string(node["capture"]) << '\n';
+        require(evidence.indices_verified,"court-frame bridges hid matching recorded Q indices");
+        require(evidence.rank_match>=0.65 && evidence.suit_match>=0.65,
+                "recorded index verification thresholds weakened");
+        ink(cv::Rect(188,248,48,106)).setTo(0);
+        require(!index_evidence(ink).indices_verified,"frame fallback accepted a missing opposite index");
+        first.copyTo(ink(cv::Rect(188,248,48,106)));
+        require(!index_evidence(ink).indices_verified,"frame fallback accepted indices in the same direction");
+        opposite.copyTo(ink(cv::Rect(188,248,48,106)));
+        // Keep the real court frame and small club, but replace the Q with A.
+        // Recovering the frame must not bypass comparison of the two ranks.
+        ink(cv::Rect(12,15,31,51)).setTo(0);
+        cv::putText(ink,"A",{14,61},cv::FONT_HERSHEY_SIMPLEX,1.8,cv::Scalar(1),3);
+        require(!index_evidence(ink).indices_verified,"frame fallback accepted different corner ranks");
+    }
+#endif
+}
+
 void verify_all_generated_indices() {
     const std::vector<std::string> ranks={"A","2","3","4","5","6","7","8","9","10","J","Q","K"};
     for (const auto& rank : ranks) for (int suit=0;suit<4;++suit) {
@@ -107,6 +150,7 @@ void verify(const CardPuzzleResult& card, const char* stage) {
 int main(int argc,char** argv) {
     try {
         verify_all_generated_indices();
+        verify_recorded_index_stacks();
         const auto scene=two_pieces();
         const auto original=scene.clone();
         const auto recognized=recognize_card_pieces(scene);
@@ -290,7 +334,7 @@ int main(int argc,char** argv) {
         const auto six_result=solve_card_puzzle(six_photo,indexed_options);
         verify(six_result,"four-piece club six");
         require(six_result.layout.indices_verified,"club-six indices not on opposite corners and directions");
-        const double center_line=six_photo.rows*0.5;
+        const double center_line=six_photo.rows*0.5-10*scale;
         for (const auto& placement : six_result.result_machine.placements)
             for (const auto point : placement.points)
                 require(point.y<center_line,"card machine polygon extends below the A4 center line");

@@ -214,6 +214,34 @@ int main() {
                     automatic.target.height >= min_size.height && automatic.target.height <= max_size.height,
                     "photographed target escaped size range");
         }
+        // Exact fitted vertices from a failed Q capture. Re-reading the camera
+        // JPEG changes edge pixels and hides this failure, so retain the actual
+        // recognition output: a known fixed size solved, automatic sizes timed out.
+        const std::vector<Polygon> photographed_queen_retry = {
+            {{385.237183f,722.609802f},{371.715973f,904.992737f},{491.907959f,918.304321f},{500.700256f,726.145325f}},
+            {{211.217255f,722.323914f},{60.6324234f,818.374146f},{132.860886f,918.501892f},{275.915192f,814.927917f}},
+            {{560.646851f,845.658386f},{518.371094f,1025.57629f},{628.525391f,1049.34741f},{670.770813f,880.057922f}},
+            {{268.491669f,917.454102f},{128.810547f,1018.82056f},{204.211288f,1116.54053f},{337.495239f,1015.64551f}}
+        };
+        const auto queen_unchanged=photographed_queen_retry;
+        double queen_area=0;
+        for(const auto& polygon : photographed_queen_retry) queen_area+=std::abs(cv::contourArea(polygon));
+        PuzzleOptions queen_options;
+        queen_options.time_limit_seconds=30;
+        const auto queen_retry=solve_puzzle_in_range(photographed_queen_retry,target.tl(),
+            {static_cast<float>(std::sqrt(queen_area*0.50)*0.985),static_cast<float>(std::sqrt(queen_area/0.85)*0.985)},
+            {static_cast<float>(std::sqrt(queen_area*0.85)*1.015),static_cast<float>(std::sqrt(queen_area/0.50)*1.015)},queen_options);
+        require(queen_retry.solved && queen_retry.placements.size()==4,"captured Q geometry lost viable automatic-size candidates");
+        require(queen_retry.coverage>=queen_options.min_coverage &&
+                queen_retry.overlap_area<=queen_retry.target.area()*queen_options.max_overlap_ratio &&
+                queen_retry.outside_area<=queen_retry.target.area()*queen_options.max_outside_ratio,
+                "Q size-search recovery relaxed final geometry limits");
+        require(photographed_queen_retry==queen_unchanged,"Q size search changed source geometry");
+        for(const auto& placement : queen_retry.placements) {
+            const auto transformed=move(photographed_queen_retry[placement.source_index],placement.rotation_radians,placement.translation);
+            for(std::size_t i=0;i<transformed.size();++i)
+                require(cv::norm(transformed[i]-placement.points[i])<0.02,"Q size search deformed a fragment");
+        }
         require(!solve_puzzle_in_range(pieces, target.tl(), max_size, min_size).solved, "reversed size range accepted");
         const auto oversized = solve_puzzle_in_range({{{0, 0}, {5000, 0}, {5000, 5000}, {0, 5000}}}, target.tl(), min_size, max_size);
         require(!oversized.solved && oversized.target.empty(), "out-of-range area reported as solved");

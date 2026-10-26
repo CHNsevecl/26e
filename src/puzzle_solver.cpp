@@ -145,9 +145,11 @@ double contact_length(const Polygon& a, const Polygon& b, const PuzzleOptions& o
 class Search {
 public:
     Search(const std::vector<Polygon>& polygons, cv::Rect2f target, const PuzzleOptions& options,
-           std::vector<cv::Rect2f> targets = {}, cv::Size2f min_size = {}, cv::Size2f max_size = {})
+           std::vector<cv::Rect2f> targets = {}, cv::Size2f min_size = {}, cv::Size2f max_size = {},
+           std::vector<cv::Rect2f> alternate_targets = {})
         : target_(target), options_(options), start_(std::chrono::steady_clock::now()),
-          targets_(std::move(targets)), min_size_(min_size), max_size_(max_size) {
+          targets_(std::move(targets)), min_size_(min_size), max_size_(max_size),
+          alternate_targets_(std::move(alternate_targets)) {
         set_target(target);
         if (targets_.empty()) result_.target = target;
         for (std::size_t i = 0; i < polygons.size(); ++i) {
@@ -176,6 +178,17 @@ public:
             return result_;
         // 先并行保留多套局部布局，再联合拟合；不能在一个近似朝向上深搜到超时。
         search_beam();
+        // Keep the established fast search. Before depth-first fallback, try
+        // finer size hypotheses when the first beam found no acceptable layout.
+        // Both passes share this Search's original clock and node counter.
+        if (!result_.solved && !result_.search_limit_reached &&
+            !alternate_targets_.empty()) {
+            targets_=std::move(alternate_targets_);
+            diversify_complete_sizes_=true;
+            placed_.clear();
+            set_target(targets_.front());
+            search_beam();
+        }
         if (!result_.solved && !result_.search_limit_reached) {
             placed_.clear();
             for (const auto target : targets_.empty() ? std::vector<cv::Rect2f>{target_} : targets_) {
@@ -407,6 +420,7 @@ private:
             }
             std::stable_sort(next.begin(), next.end(), [](const Layout& a, const Layout& b) { return a.score > b.score; });
             beam.clear();
+            std::vector<Layout> deferred;
             std::set<std::vector<long long>> seen;
             std::map<std::pair<int, int>, std::size_t> size_counts;
             for (auto& layout : next) {
@@ -414,16 +428,28 @@ private:
                 for (const auto& p : layout.pieces) ordered.push_back(&p.placement);
                 std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->source_index < b->source_index; });
                 const auto size_key = std::make_pair(cvRound(layout.target.width * 2), cvRound(layout.target.height * 2));
-                if (!targets_.empty() && depth + 1 < shapes_.size() && size_counts[size_key] >= 4) continue;
                 std::vector<long long> key{size_key.first, size_key.second};
                 for (const auto* p : ordered) {
                     key.insert(key.end(), {static_cast<long long>(p->source_index), std::llround(p->rotation_radians * 1000),
                         std::llround(p->translation.x * 2), std::llround(p->translation.y * 2)});
                 }
                 if (!seen.insert(key).second) continue;
+                // Reserve finalists for each size before filling spare places
+                // with the remaining best layouts. A hard four-per-size cap
+                // would discard useful variants even when the beam is empty.
+                if (!targets_.empty() && (depth+1<shapes_.size() || diversify_complete_sizes_) &&
+                    size_counts[size_key] >= 4) {
+                    if (diversify_complete_sizes_ && depth+1==shapes_.size())
+                        deferred.push_back(std::move(layout));
+                    continue;
+                }
                 ++size_counts[size_key];
                 beam.push_back(std::move(layout));
                 if (beam.size() == beam_width) break;
+            }
+            for (auto& layout : deferred) {
+                if (beam.size()==beam_width) break;
+                beam.push_back(std::move(layout));
             }
             if (depth + 1 == shapes_.size()) {
                 for (const auto& layout : beam) {
@@ -516,15 +542,26 @@ private:
         return true;
     }
 
-    double layout_error() const {
+    double layout_error(bool include_seam_limits=false) const {
         double outside = 0.0, overlap = 0.0, boundary_error = 0.0, total_area = 0.0;
+        double seam_error=0;
         for (std::size_t i = 0; i < placed_.size(); ++i) {
             const auto& candidate = placed_[i];
             const double area = std::abs(cv::contourArea(candidate.placement.points));
             total_area += area;
             outside += std::max(0.0, area - intersection_area(candidate.triangles, border_triangles_));
-            for (std::size_t j = 0; j < i; ++j)
-                overlap += intersection_area(candidate.triangles, placed_[j].triangles);
+            for (std::size_t j = 0; j < i; ++j) {
+                const double shared=intersection_area(candidate.triangles, placed_[j].triangles);
+                overlap+=shared;
+                if (include_seam_limits) {
+                    // Optimize the same pairwise overlap constraint used by
+                    // accept_complete, including the contact-distance limit.
+                    const double contact=contact_length(candidate.placement.points,placed_[j].placement.points,options_);
+                    const double budget=std::min(options_.position_tolerance*contact+
+                        options_.position_tolerance*options_.position_tolerance,target_.area()*options_.max_overlap_ratio);
+                    seam_error+=std::max(0.0,shared-budget)/std::max(1.0,budget);
+                }
+            }
             for (const auto p : candidate.placement.points) {
                 const double distance = std::max({0.0, static_cast<double>(target_.x - p.x),
                     static_cast<double>(p.x - target_.x - target_.width), static_cast<double>(target_.y - p.y),
@@ -536,12 +573,12 @@ private:
         const double missing = std::max(0.0, target_.area() - total_area + overlap + outside);
         const double missing_error = targets_.empty() ? 0.0 :
             missing / std::max(1e-6, target_.area() * (1.0 - options_.min_coverage));
-        return (overlap + outside) / target_.area() + boundary_error + missing_error +
+        return (overlap + outside) / target_.area() + boundary_error + missing_error + seam_error +
                std::max(overlap / std::max(1e-6, target_.area() * options_.max_overlap_ratio),
                         outside / std::max(1e-6, target_.area() * options_.max_outside_ratio));
     }
 
-    void improve_solution() {
+    void improve_solution(bool move_centers_with_target=false) {
         const auto original = placed_;
         const auto original_target = target_;
         // 微调是有界的附加步骤；失败时保留已经确认的解，不能破坏回退状态。
@@ -549,7 +586,7 @@ private:
             std::chrono::duration<double>(options_.time_limit_seconds)),
             std::chrono::steady_clock::now() + std::chrono::milliseconds(250));
         const auto within_budget = [&] { return std::chrono::steady_clock::now() < deadline; };
-        double best_error = layout_error();
+        double best_error = layout_error(move_centers_with_target);
         for (const double step : {1.0, 0.5, 0.25}) {
             if (!within_budget()) break;
             for (int pass = 0; pass < 8 && within_budget(); ++pass) {
@@ -571,7 +608,7 @@ private:
                             for (auto& p : candidate.placement.points) p = rotate(p - center, angle) + center + shift;
                             for (auto& triangle : candidate.triangles)
                                 for (auto& p : triangle) p = rotate(p - center, angle) + center + shift;
-                            const double error = layout_error();
+                            const double error = layout_error(move_centers_with_target);
                             if (error + 1e-9 < best_error) { best_error = error; improved = true; }
                             else candidate = saved;
                         }
@@ -584,10 +621,34 @@ private:
                             if (axis == 0) target.width = std::clamp(static_cast<float>(target.width + sign * step), min_size_.width, max_size_.width);
                             else target.height = std::clamp(static_cast<float>(target.height + sign * step), min_size_.height, max_size_.height);
                             const auto saved = target_;
+                            std::vector<Candidate> saved_pieces;
+                            if (move_centers_with_target) {
+                                saved_pieces=placed_;
+                                std::vector<double> centers;
+                                for (const auto& piece : placed_) {
+                                    const auto m=cv::moments(piece.placement.points);
+                                    centers.push_back(axis==0 ? m.m10/m.m00 : m.m01/m.m00);
+                                }
+                                const auto range=std::minmax_element(centers.begin(),centers.end());
+                                const double span=*range.second-*range.first;
+                                const double delta=axis==0 ? target.width-saved.width : target.height-saved.height;
+                                for (std::size_t i=0;i<placed_.size() && span>1e-6;++i) {
+                                    const float distance=delta*(centers[i]-*range.first)/span;
+                                    const cv::Point2f shift(axis==0 ? distance : 0,axis==1 ? distance : 0);
+                                    auto& piece=placed_[i];
+                                    piece.placement.translation+=shift;
+                                    piece.placement.center_gravity+=shift;
+                                    for (auto& p : piece.placement.points) p+=shift;
+                                    for (auto& triangle : piece.triangles) for (auto& p : triangle) p+=shift;
+                                }
+                            }
                             set_target(target);
-                            const double error = layout_error();
+                            const double error = layout_error(move_centers_with_target);
                             if (error + 1e-9 < best_error) { best_error = error; improved = true; }
-                            else set_target(saved);
+                            else {
+                                set_target(saved);
+                                if (move_centers_with_target) placed_=std::move(saved_pieces);
+                            }
                         }
                     }
                 }
@@ -608,6 +669,72 @@ private:
             return std::chrono::duration<double>(std::chrono::steady_clock::now()-start_).count() <
                 0.9*options_.time_limit_seconds;
         };
+        // Matching indices do not validate the orientation of unindexed pieces.
+        // Always compare independent half-turns; also exchange slots when index
+        // repair requires moving several pieces together (at most four pieces).
+        if (count<=4) {
+            const bool exchange_slots=!result_.layout_accepted;
+            const auto base=result_.placements;
+            const auto target=result_.target;
+            std::vector<std::size_t> slots;
+            for (std::size_t i=0;i<count;++i) slots.push_back(i);
+            std::vector<Trial> trials;
+            double initial_score=0;
+            bool initial_accepted=result_.layout_accepted;
+            do {
+                bool fits=true;
+                for (std::size_t i=0;i<count;++i) {
+                    const auto a=cv::boundingRect(base[i].points),b=cv::boundingRect(base[slots[i]].points);
+                    const double margin=4*options_.position_tolerance+1;
+                    if (std::abs(a.width-b.width)>margin || std::abs(a.height-b.height)>margin) fits=false;
+                }
+                if (!fits) continue;
+                for (std::size_t turns=0;turns<(std::size_t{1}<<count);++turns) {
+                    if (limit_reached() || !within_exchange_budget()) return;
+                    Trial trial;
+                    for (std::size_t i=0;i<count;++i) {
+                        Candidate candidate;
+                        auto& p=candidate.placement;
+                        p=base[i];
+                        const auto origin=p.center_gravity,destination=base[slots[i]].center_gravity;
+                        const double angle=(turns&(std::size_t{1}<<i)) ? CV_PI : 0;
+                        p.rotation_radians=std::remainder(p.rotation_radians+angle,2*CV_PI);
+                        p.translation=rotate(p.translation-origin,angle)+destination;
+                        p.center_gravity=destination;
+                        for (auto& point : p.points) point=rotate(point-origin,angle)+destination;
+                        candidate.triangles=triangulate(p.points);
+                        trial.pieces.push_back(std::move(candidate));
+                    }
+                    placed_=trial.pieces;
+                    set_target(target);
+                    const auto appearance=layout_score(placed_);
+                    trial.accepted=appearance.accepted;
+                    trial.score=appearance_score(placed_)+boundary_score(placed_)+appearance.score-10*layout_error();
+                    if (trials.empty()) initial_score=trial.score;
+                    trials.push_back(std::move(trial));
+                }
+            } while (exchange_slots && std::next_permutation(slots.begin(),slots.end()));
+            std::stable_sort(trials.begin(),trials.end(),[](const Trial& a,const Trial& b) {
+                return a.accepted!=b.accepted ? a.accepted : a.score>b.score;
+            });
+            for (const auto& trial : trials) {
+                if ((result_.layout_accepted && !trial.accepted) ||
+                    (trial.accepted==initial_accepted && trial.score<=initial_score+0.001)) continue;
+                if (limit_reached() || !within_exchange_budget()) return;
+                placed_=trial.pieces;
+                set_target(target);
+                ++result_.explored_nodes;
+                const auto previous=solution_revision_;
+                if (!accept_complete()) {
+                    improve_solution();
+                    // A half-turn can need a slightly wider rectangle. Move
+                    // whole-piece centers with its size to cross that joint
+                    // constraint without scaling or changing any piece shape.
+                    if (solution_revision_==previous) improve_solution(true);
+                }
+                if (solution_revision_>previous && result_.layout_accepted) return;
+            }
+        }
         for (int pass=0;pass<2;++pass) {
             const auto before=solution_revision_;
             const auto base=result_.placements;
@@ -751,6 +878,8 @@ private:
     bool valid_ = true;
     std::vector<cv::Rect2f> targets_;
     cv::Size2f min_size_, max_size_;
+    std::vector<cv::Rect2f> alternate_targets_;
+    bool diversify_complete_sizes_=false;
 };
 } // namespace
 
@@ -822,22 +951,30 @@ PuzzleResult solve_puzzle_in_range(const std::vector<std::vector<cv::Point2f>>& 
             candidates.push_back({cv::Rect2f(origin.x, origin.y, w, h), error});
         }
     std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.error < b.error; });
-    std::vector<cv::Rect2f> targets;
-    const double separation = std::max(1.0, 2 * options.position_tolerance);
-    const auto add = [&](cv::Rect2f target) {
-        if (targets.size() >= 16 || !feasible_area(target.width, target.height)) return;
-        for (const auto old : targets)
-            if (std::abs(old.width - target.width) < separation && std::abs(old.height - target.height) < separation) return;
-        targets.push_back(target);
+    const auto make_targets = [&](double separation) {
+        std::vector<cv::Rect2f> targets;
+        const auto add = [&](cv::Rect2f target) {
+            if (targets.size() >= 16 || !feasible_area(target.width, target.height)) return;
+            for (const auto old : targets)
+                if (std::abs(old.width - target.width) < separation && std::abs(old.height - target.height) < separation) return;
+            targets.push_back(target);
+        };
+        // 首先保留数据支持最强的尺寸，再用面积关系覆盖剩余长宽比，避免仅按面积猜一个尺寸。
+        for (const auto& candidate : candidates) { add(candidate.target); if (targets.size() == 4) break; }
+        for (const int index : {0, 12, 6, 3, 9, 1, 11, 5, 7, 2, 10, 4, 8}) {
+            const double w = min_size.width + (max_size.width - min_size.width) * index / 12.0;
+            const double h = std::clamp(area / w, static_cast<double>(min_size.height), static_cast<double>(max_size.height));
+            add(cv::Rect2f(origin.x, origin.y, w, h));
+        }
+        for (const auto& candidate : candidates) add(candidate.target);
+        return targets;
     };
-    // 首先保留数据支持最强的尺寸，再用面积关系覆盖剩余长宽比，避免仅按面积猜一个尺寸。
-    for (const auto& candidate : candidates) { add(candidate.target); if (targets.size() == 4) break; }
-    for (const int index : {0, 12, 6, 3, 9, 1, 11, 5, 7, 2, 10, 4, 8}) {
-        const double w = min_size.width + (max_size.width - min_size.width) * index / 12.0;
-        const double h = std::clamp(area / w, static_cast<double>(min_size.height), static_cast<double>(max_size.height));
-        add(cv::Rect2f(origin.x, origin.y, w, h));
-    }
-    for (const auto& candidate : candidates) add(candidate.target);
+    auto targets=make_targets(std::max(1.0,2*options.position_tolerance));
     if (targets.empty()) return {};
-    return Search(polygons, targets.front(), options, targets, min_size, max_size).run();
+    // Nearby dimensions can require different corner/edge assignments. Retain
+    // the original coarse pass and prepare a denser fallback instead of making
+    // every normally successful capture pay for extra hypotheses.
+    auto alternate_targets=make_targets(std::max(1.0,options.position_tolerance));
+    if (alternate_targets==targets) alternate_targets.clear();
+    return Search(polygons, targets.front(), options, targets, min_size, max_size,alternate_targets).run();
 }
